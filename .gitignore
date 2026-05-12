@@ -1,0 +1,17 @@
+# Reports / evidence
+powershell/Reports/
+*.json
+*.html
+*.log
+
+# Backups created during fixes
+*.backup*
+*.bak
+*.old
+*.tmp
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
