@@ -1034,6 +1034,8 @@ function Get-ZTVPScenarios {
             Phase        = "Phase 2"
         }
 
+
+
 # >>> ZTVP POP1 DIRECT SCENARIO
 [PSCustomObject]@{
     ScenarioId   = "POP1"
@@ -1353,3 +1355,49 @@ function Get-ZTVPScenariosByCategory {
 
 
 
+
+
+
+# >>> ZTVP HYBRID AUTH SAFE PATCH
+$script:ZTVP_HybridAuth_BaseCatalog = ${function:Get-ZTVPScenarios}
+
+function Get-ZTVPScenarios {
+    $scenarios = @(& $script:ZTVP_HybridAuth_BaseCatalog)
+
+    $scenarios = @($scenarios | Where-Object {
+        $_.ScenarioId -notin @("H-A1", "H-A2")
+    })
+
+    $scenarios += [PSCustomObject]@{
+        ScenarioId   = "H-A1"
+        Name         = "Hybrid Authentication Method Alignment Review"
+        PillarName   = "Identity"
+        CategoryId   = "AUTH"
+        CategoryName = "Authentication Security"
+        Scope        = "Hybrid"
+        Priority     = "High"
+        Phase        = "Phase 2"
+        Objective    = "Review enabled synced users and validate whether they have strong cloud authentication method evidence."
+        Implemented  = $true
+        EnginePath   = ".\powershell\Engines\AuthenticationSecurity\Invoke-ZTVP-HA1.ps1"
+        FunctionName = "Invoke-ZTVP-HA1"
+    }
+
+    $scenarios += [PSCustomObject]@{
+        ScenarioId   = "H-A2"
+        Name         = "Password Hash Sync / PTA / Federation Posture Review"
+        PillarName   = "Identity"
+        CategoryId   = "AUTH"
+        CategoryName = "Authentication Security"
+        Scope        = "Hybrid"
+        Priority     = "High"
+        Phase        = "Phase 2"
+        Objective    = "Review the hybrid authentication model, tenant domain authentication type, and local Entra Connect sync scheduler evidence when available."
+        Implemented  = $true
+        EnginePath   = ".\powershell\Engines\AuthenticationSecurity\Invoke-ZTVP-HA2.ps1"
+        FunctionName = "Invoke-ZTVP-HA2"
+    }
+
+    return @($scenarios)
+}
+# <<< ZTVP HYBRID AUTH SAFE PATCH

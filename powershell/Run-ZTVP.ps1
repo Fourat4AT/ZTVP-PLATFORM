@@ -200,6 +200,7 @@ else {
         Write-Host "----------------------------------------" -ForegroundColor Cyan
         Write-Host "[1] Cloud" -ForegroundColor Cyan
         Write-Host "[2] On-Premises" -ForegroundColor Cyan
+            Write-Host "[3] Hybrid"
         Write-Host "[B] Back"
         Write-Host "[Q] Quit"
         Write-Host ""
@@ -214,6 +215,7 @@ else {
         switch ($scopeChoice) {
             "1" { $selectedScope = "Cloud" }
             "2" { $selectedScope = "On-Premises" }
+            "3" { $selectedScope = "Hybrid" }
             default {
                 Write-Host ""
                 Write-Host "Invalid environment scope." -ForegroundColor Red
@@ -1178,6 +1180,8 @@ function Show-ZTVPResultDetailed {
     Write-Host "----------" -ForegroundColor Cyan
     Write-Host "Save the report with Y, then use the E1 HTML report for the full policy evidence tables." -ForegroundColor DarkGray
 }
+
+
 
 
 

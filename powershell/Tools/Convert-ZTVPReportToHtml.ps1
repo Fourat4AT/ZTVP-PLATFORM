@@ -24,6 +24,7 @@ $toolsDir = $PSScriptRoot
 $scenarioId = $result.scenario_id
 
 $converterMap = @{
+    "H-A1" = "Convert-ZTVPHA1ReportToHtml.ps1"
     "B5" = "Convert-ZTVPB5ReportToHtml.ps1"
     "B4" = "Convert-ZTVPB4ReportToHtml.ps1"
     "B3" = "Convert-ZTVPB3ReportToHtml.ps1"
@@ -60,6 +61,7 @@ if (-not (Test-Path $sharedConverter)) {
 
 Write-Host "Using shared HTML report generator..." -ForegroundColor Cyan
 & $sharedConverter -JsonPath $jsonFullPath
+
 
 
 

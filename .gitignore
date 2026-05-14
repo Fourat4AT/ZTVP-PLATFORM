@@ -1,17 +1,40 @@
-# Reports / evidence
-powershell/Reports/
-*.json
-*.html
-*.log
+# python cache
+__pycache__/
+*.pyc
 
-# Backups created during fixes
+# virtual environments
+.venv/
+venv/
+.env
+
+# streamlit secrets/cache
+.streamlit/secrets.toml
+
+# generated reports
+reports/
+powershell/Reports/
+
+# backup files
 *.backup*
+*.backup-*
 *.bak
 *.old
-*.tmp
+ui/*.backup*
+powershell/**/*.backup*
+powershell/*.backup*
 
-# OS/editor files
-.DS_Store
-Thumbs.db
+# downloaded archives / external packages
+*.zip
+*.7z
+*.rar
+IntuneManagement-master*/
+OpenIntuneBaseline-main*
+
+# temporary / old scripts
+fix-baseline-final.ps1
+
+# editor/system files
 .vscode/
 .idea/
+.DS_Store
+Thumbs.db
