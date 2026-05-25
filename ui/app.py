@@ -7,9 +7,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
+import re
+import re
+import html
 import streamlit as st
-
-
+from simulation_page import render_simulation_page
+from dynamic_idc001 import render_idc001_runner
+from dynamic_validation_page import render_dynamic_validation_page
+from active_runs_page import render_active_runs_page
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 POWERSHELL_DIR = PROJECT_ROOT / "powershell"
 CATALOG_PATH = POWERSHELL_DIR / "ScenarioCatalog.ps1"
@@ -511,6 +516,11 @@ def apply_dynamic_catalog_corrections() -> List[Dict[str, Any]]:
     return corrected
 
 
+
+
+
+
+
 DYNAMIC_SCENARIOS = apply_dynamic_catalog_corrections()
 
 
@@ -535,11 +545,47 @@ st.markdown(
 }
 
 section[data-testid="stSidebar"] {
-    background: #0f172a;
+    background: linear-gradient(180deg, #07111f 0%, #0f172a 58%, #111827 100%);
 }
 
 section[data-testid="stSidebar"] * {
     color: #e5e7eb !important;
+}
+
+section[data-testid="stSidebar"] [role="radiogroup"] label {
+    border-radius: 12px;
+    padding: 0.35rem 0.55rem;
+    margin-bottom: 0.2rem;
+}
+
+section[data-testid="stSidebar"] [role="radiogroup"] label:hover {
+    background: rgba(59, 130, 246, 0.14);
+}
+
+[data-testid="stColumns"] {
+    align-items: flex-start !important;
+}
+
+[data-testid="stColumn"] {
+    align-self: flex-start !important;
+}
+
+.ztvp-sidebar-brand {
+    padding: 0.55rem 0 0.8rem 0;
+}
+
+.ztvp-sidebar-brand-title {
+    font-size: 1.08rem;
+    font-weight: 950;
+    color: #f8fafc;
+    letter-spacing: .01em;
+}
+
+.ztvp-sidebar-brand-subtitle {
+    margin-top: 0.12rem;
+    font-size: 0.75rem;
+    color: #94a3b8 !important;
+    line-height: 1.25;
 }
 
 .ztvp-hero {
@@ -578,6 +624,330 @@ section[data-testid="stSidebar"] * {
 .ztvp-card h3,
 .ztvp-card p {
     color: #0f172a;
+}
+
+.ztvp-dashboard-strip {
+    display: grid;
+    grid-template-columns: 1.6fr 1fr 1fr;
+    gap: 0.9rem;
+    margin: 0 0 1.25rem 0;
+}
+
+.ztvp-stat-tile {
+    background: rgba(255, 255, 255, 0.94);
+    border: 1px solid #dbe5f3;
+    border-radius: 18px;
+    padding: 1rem 1.05rem;
+    box-shadow: 0 12px 26px rgba(15, 23, 42, 0.065);
+}
+
+.ztvp-stat-tile span {
+    display: block;
+    color: #64748b;
+    font-size: 0.76rem;
+    font-weight: 850;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 0.35rem;
+}
+
+.ztvp-stat-tile strong {
+    display: block;
+    color: #0f172a;
+    font-size: 1rem;
+    font-weight: 950;
+    line-height: 1.25;
+    word-break: break-word;
+}
+
+.ztvp-workbench-shell {
+    margin-top: 1.35rem;
+    margin-bottom: 0.85rem;
+}
+
+.ztvp-workbench-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.ztvp-eyebrow {
+    color: #2563eb;
+    font-size: 0.74rem;
+    font-weight: 950;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 0.3rem;
+}
+
+.ztvp-workbench-head h3 {
+    margin: 0;
+    color: #0f172a;
+    font-size: 1.28rem;
+    font-weight: 950;
+}
+
+.ztvp-workbench-head p {
+    margin: 0.35rem 0 0 0;
+    color: #64748b;
+    font-size: 0.95rem;
+}
+
+.ztvp-workbench-status {
+    background: #ecfdf5;
+    color: #166534;
+    border: 1px solid #bbf7d0;
+    border-radius: 999px;
+    padding: 0.42rem 0.68rem;
+    font-size: 0.75rem;
+    font-weight: 900;
+    white-space: nowrap;
+}
+
+.ztvp-workbench {
+    margin-top: 0.25rem;
+    margin-bottom: 0;
+}
+
+.ztvp-feature-card {
+    background: #ffffff;
+    border: 1px solid #dbe5f3;
+    border-radius: 20px;
+    padding: 24px;
+    box-shadow: 0 16px 35px rgba(15, 23, 42, 0.08);
+    transition: all 0.2s ease;
+    margin-bottom: 0;
+    position: relative;
+    overflow: hidden;
+}
+
+.ztvp-feature-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 20px 45px rgba(15, 23, 42, 0.12);
+}
+
+.ztvp-feature-card-primary {
+    min-height: 270px;
+    padding-bottom: 82px;
+    background:
+        radial-gradient(circle at top right, rgba(37, 99, 235, 0.10), transparent 34%),
+        linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+}
+
+.ztvp-feature-card-primary:before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    right: 0;
+    height: 4px;
+    background: linear-gradient(135deg, #2563eb, #22c55e);
+}
+
+.ztvp-feature-card-secondary {
+    min-height: 230px;
+    padding-bottom: 82px;
+    background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+}
+
+.ztvp-feature-icon {
+    width: 46px;
+    height: 46px;
+    border-radius: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #eff6ff;
+    color: #1d4ed8;
+    font-size: 1.3rem;
+    margin-bottom: 0.9rem;
+}
+
+.ztvp-feature-card h3 {
+    margin: 0 0 0.45rem 0;
+    color: #0f172a;
+    font-size: 1.18rem;
+    font-weight: 950;
+}
+
+.ztvp-feature-card p {
+    color: #475569;
+    line-height: 1.52;
+    margin: 0;
+    font-size: 0.94rem;
+}
+
+.ztvp-feature-badges {
+    margin-top: 1rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.ztvp-feature-badge {
+    display: inline-block;
+    border-radius: 999px;
+    padding: 0.34rem 0.62rem;
+    margin-right: 0.38rem;
+    margin-bottom: 0.32rem;
+    background: #eef6ff;
+    color: #1e40af;
+    font-size: 0.75rem;
+    font-weight: 850;
+}
+
+.ztvp-progress-wrap {
+    margin-bottom: 12px;
+}
+
+.ztvp-container-card-title {
+    margin: 0.8rem 0 0.6rem 0;
+    color: #0f172a;
+    font-size: 1.45rem;
+    font-weight: 800;
+}
+
+.ztvp-container-card-text {
+    color: #475569;
+    line-height: 1.6;
+    margin: 0 0 1rem 0;
+    font-size: 1rem;
+}
+
+.ztvp-module-list {
+    margin: 0.8rem 0 1rem 1.05rem;
+    padding: 0;
+    color: #334155;
+    line-height: 1.6;
+    font-size: 0.92rem;
+}
+
+.ztvp-module-list li {
+    margin-bottom: 0.15rem;
+}
+
+.ztvp-home-module-card {
+    display: block;
+}
+
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.ztvp-home-module-card) {
+    background: #ffffff !important;
+    border: 1px solid #dbe5f3 !important;
+    border-radius: 22px !important;
+    box-shadow: 0 16px 36px rgba(15, 23, 42, 0.08) !important;
+    min-height: 300px !important;
+    padding: 0.6rem !important;
+    position: relative !important;
+    overflow: hidden !important;
+}
+
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.ztvp-home-module-card)::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 24px;
+    right: 24px;
+    height: 4px;
+    border-radius: 0 0 999px 999px;
+    background: linear-gradient(90deg, #2563eb, #22c55e);
+}
+
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.ztvp-home-module-card):hover {
+    box-shadow: 0 22px 48px rgba(15, 23, 42, 0.12) !important;
+}
+
+.ztvp-home-badge-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 0.5rem;
+    margin-bottom: 1.25rem;
+}
+
+.ztvp-home-badge {
+    background: #eef4ff;
+    border: 1px solid #dbeafe;
+    color: #1d4ed8;
+    border-radius: 999px;
+    padding: 8px 12px;
+    font-size: 0.84rem;
+    font-weight: 700;
+}
+
+.ztvp-home-action {
+    display: flex;
+    justify-content: center;
+    margin-top: auto;
+    padding-top: 12px;
+}
+
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.ztvp-home-module-card) div[data-testid="stButton"] {
+    display: flex !important;
+    justify-content: center !important;
+    margin-top: 0.35rem !important;
+}
+
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.ztvp-home-module-card) div[data-testid="stButton"] button,
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.ztvp-home-module-card) button[data-testid="stBaseButton-primary"] {
+    min-width: 220px !important;
+    max-width: 220px !important;
+    height: 46px !important;
+    border-radius: 12px !important;
+    font-size: 1rem !important;
+    font-weight: 700 !important;
+    background: linear-gradient(135deg, #2563eb, #1d4ed8) !important;
+    color: #ffffff !important;
+    border: none !important;
+    box-shadow: 0 10px 20px rgba(37, 99, 235, 0.22) !important;
+}
+
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.ztvp-home-module-card) div[data-testid="stButton"] button:hover,
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.ztvp-home-module-card) button[data-testid="stBaseButton-primary"]:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 12px 24px rgba(37, 99, 235, 0.28) !important;
+    background: linear-gradient(135deg, #3b82f6, #2563eb) !important;
+}
+
+.ztvp-signal-list {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.55rem;
+    margin-top: 1rem;
+}
+
+.ztvp-signal {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 14px;
+    padding: 0.62rem;
+    color: #334155;
+    font-size: 0.78rem;
+    font-weight: 800;
+}
+
+.ztvp-capabilities-section {
+    margin-top: 32px;
+}
+
+.ztvp-section {
+    margin-top: 1.35rem;
+    margin-bottom: 0.8rem;
+}
+
+.ztvp-section h3 {
+    margin-bottom: 0.35rem;
+    font-size: 2.1rem;
+    font-weight: 800;
+    color: #0f172a;
+}
+
+.ztvp-section p {
+    margin-top: 0;
+    margin-bottom: 1.5rem;
+    color: #64748b;
+    font-size: 1rem;
 }
 
 .ztvp-muted {
@@ -654,48 +1024,74 @@ div[data-testid="stMetricValue"] {
     font-weight:900 !important;
 }
 
-/* Make normal buttons look like clickable cards */
 .stButton > button {
-    background: #ffffff !important;
-    color: #0f172a !important;
-    border: 1px solid #dbe4f0 !important;
-    border-radius: 22px !important;
-    padding: 1.1rem 1.2rem !important;
-    font-weight: 800 !important;
-    min-height: 104px;
-    text-align: left !important;
+    border-radius: 12px !important;
+    padding: 0.58rem 0.9rem !important;
+    font-weight: 850 !important;
+    min-height: 42px;
+    text-align: center !important;
     white-space: normal !important;
-    box-shadow: 0 10px 28px rgba(15, 23, 42, .07);
-    transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease, background .15s ease;
+    box-shadow: 0 4px 12px rgba(15, 23, 42, .05);
+    transition: box-shadow .15s ease, border-color .15s ease, background .15s ease;
 }
 
 .stButton > button:hover {
     background: #eff6ff !important;
     color: #0f172a !important;
     border-color: #2563eb !important;
-    transform: translateY(-2px);
-    box-shadow:0 16px 36px rgba(15,23,42,.12);
+    box-shadow:0 8px 18px rgba(15,23,42,.09);
 }
 
 .stButton > button p {
     color: #0f172a !important;
 }
 
-/* Primary buttons keep action color */
-div[data-testid="stButton"] button[kind="primary"] {
-    background: #2563eb !important;
+/* Primary action buttons */
+div[data-testid="stButton"] button[kind="primary"],
+div[data-testid="stButton"] button[data-testid="stBaseButton-primary"],
+.stButton button[kind="primary"],
+.stButton button[data-testid="stBaseButton-primary"],
+button[data-testid="stBaseButton-primary"] {
+    background: linear-gradient(135deg, #2563eb, #1d4ed8) !important;
     color: #ffffff !important;
+    border: none !important;
+    border-radius: 12px !important;
+    padding: 0.7rem 1.1rem !important;
+    font-weight: 700 !important;
     text-align: center !important;
+    width: auto !important;
+    min-width: 190px !important;
+    max-width: 200px !important;
+    box-shadow: 0 8px 20px rgba(37, 99, 235, 0.22) !important;
 }
 
-div[data-testid="stButton"] button[kind="primary"]:hover {
-    background: #1d4ed8 !important;
+div[data-testid="stButton"] button[kind="primary"]:hover,
+div[data-testid="stButton"] button[data-testid="stBaseButton-primary"]:hover,
+.stButton button[kind="primary"]:hover,
+.stButton button[data-testid="stBaseButton-primary"]:hover,
+button[data-testid="stBaseButton-primary"]:hover {
+    background: linear-gradient(135deg, #1d4ed8, #1e40af) !important;
+    color: #ffffff !important;
+}
+
+div[data-testid="stButton"] button[kind="primary"] p,
+div[data-testid="stButton"] button[data-testid="stBaseButton-primary"] p,
+.stButton button[kind="primary"] p,
+.stButton button[data-testid="stBaseButton-primary"] p,
+button[data-testid="stBaseButton-primary"] p {
     color: #ffffff !important;
 }
 
 [data-testid="stDataFrame"] {
     background:white !important;
     border-radius:18px !important;
+}
+
+@media (max-width: 900px) {
+    .ztvp-dashboard-strip { grid-template-columns: 1fr; }
+    .ztvp-workbench-head { display: block; }
+    .ztvp-workbench-status { display: inline-block; margin-top: 0.75rem; }
+    .ztvp-signal-list { grid-template-columns: 1fr; }
 }
 </style>
 """,
@@ -1012,6 +1408,87 @@ def get_effective_capabilities(detected_caps: Dict[str, bool]) -> Dict[str, bool
     return effective
 
 
+
+def get_dynamic_scope(scenario: dict) -> str:
+    for key in ["scope", "Scope", "environment", "environment_scope", "EnvironmentScope"]:
+        value = str(scenario.get(key, "")).strip()
+        if value:
+            return value
+
+    scenario_id = str(scenario.get("id", scenario.get("scenario_id", ""))).upper()
+    pillar = str(scenario.get("pillar", "")).strip()
+
+    if scenario_id.startswith("ID-H"):
+        return "Hybrid"
+
+    if scenario_id.startswith("ID-C"):
+        return "Cloud"
+
+    if scenario_id.startswith("APP"):
+        return "Cloud"
+
+    if pillar == "Endpoint":
+        return "Device"
+
+    if pillar == "Applications":
+        return "Cloud"
+
+    return "Cloud"
+
+
+def clean_dynamic_value(value: object) -> str:
+    text = str(value or "")
+    text = text.replace("<h3>", "").replace("</h3>", "")
+    text = text.replace("<p>", "").replace("</p>", "")
+    text = re.sub(r"<[^>]+>", "", text)
+    return text.strip()
+
+def clean_dynamic_value(value: object) -> str:
+    text = str(value or "")
+    text = html.unescape(text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(
+        r"^(Scenario Objective|Controlled Action|Expected Result|Evidence Required|Decoy / Test Object|Decoy/Test Object)\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def sanitize_dynamic_catalog(scenarios: list) -> list:
+    for scenario in scenarios:
+        for key in [
+            "goal",
+            "objective",
+            "description",
+            "decoys",
+            "test_action",
+            "evidence",
+            "expected",
+        ]:
+            if key in scenario:
+                scenario[key] = clean_dynamic_value(scenario.get(key))
+    return scenarios
+def get_dynamic_id(scenario: dict) -> str:
+    return str(
+        scenario.get("id")
+        or scenario.get("scenario_id")
+        or scenario.get("ScenarioId")
+        or ""
+    ).strip()
+
+
+def is_privileged_mfa_probe(scenario: dict) -> bool:
+    scenario_id = get_dynamic_id(scenario).upper()
+    name = str(scenario.get("name", scenario.get("Name", ""))).lower()
+
+    return (
+        scenario_id in ["ID-C-001", "ID-DV-001"]
+        or "privileged mfa" in name
+        or "privileged mfa enforcement" in name
+    )
 def dynamic_support(scenario: Dict[str, Any], caps: Dict[str, bool]) -> str:
     required = scenario.get("requires") or []
     missing = [r for r in required if not caps.get(r, False)]
@@ -1126,6 +1603,21 @@ if "dynamic_pillar" not in st.session_state:
 if "dynamic_scenario_id" not in st.session_state:
     st.session_state.dynamic_scenario_id = None
 
+if st.session_state.home_mode == "assessment":
+    st.session_state.home_mode = "home"
+
+
+def go_home() -> None:
+    st.session_state.home_mode = "home"
+    st.session_state.dynamic_pillar = None
+    st.session_state.dynamic_scenario_id = None
+    st.session_state.pop("ztvp_dynamic_open_scenario", None)
+
+
+def handle_sidebar_navigation() -> None:
+    if st.session_state.get("main_navigation") == "Home":
+        go_home()
+
 assessment_scenarios = load_assessment_scenarios()
 reports = list_reports()
 preflight = load_preflight()
@@ -1133,16 +1625,29 @@ detected_caps = detect_capabilities(preflight) if preflight else {}
 caps = get_effective_capabilities(detected_caps) if detected_caps else {}
 
 
-st.sidebar.title("🛡️ ZTVP")
+st.sidebar.markdown(
+    """
+<div class="ztvp-sidebar-brand">
+  <div class="ztvp-sidebar-brand-title">🛡️ ZTVP</div>
+  <div class="ztvp-sidebar-brand-subtitle">Zero Trust Validation Platform</div>
+</div>
+""",
+    unsafe_allow_html=True,
+)
 
 if st.session_state.connected:
-    page = st.sidebar.radio("Navigation", ["Home", "Reports"])
+    page = st.sidebar.radio(
+        "Navigation",
+        ["Home", "Active Runs", "Reports"],
+        key="main_navigation",
+        on_change=handle_sidebar_navigation,
+    )
 else:
     page = "Connect Tenant"
     st.sidebar.info("Connect to a tenant first.")
 
 st.sidebar.markdown("---")
-st.sidebar.caption("Assessment · Dynamic Validation · Simulation")
+st.sidebar.caption("Dynamic Validation · Simulation · Reports")
 
 
 if not st.session_state.connected:
@@ -1188,58 +1693,72 @@ if page == "Home":
     if st.session_state.home_mode == "home":
         hero(
             "Zero Trust Validation Platform",
-            "Choose the workflow: Assessment, Dynamic Validation, or Simulation.",
+            "ZTVP validates whether Microsoft security controls actually work in real tenant conditions.",
         )
-
-        org = preflight.get("organization") if preflight else {}
-        org_name = org.get("displayName") if isinstance(org, dict) else "Connected tenant"
+        st.caption("Run controlled validation scenarios, collect endpoint and tenant evidence, and export consultant-ready results.")
 
         st.markdown(
-            f"""
-<div class="ztvp-card">
-    <h2>{esc(org_name or "Connected tenant")}</h2>
-    <p class="ztvp-muted">Tenant ID: {esc(preflight.get("tenant_id", "")) if preflight else ""}</p>
-    {badge("CONNECTED", "good")}
+            """
+<div class="ztvp-section">
+  <h3>Validation Workbench</h3>
+  <p>Run controlled validation scenarios and preview tenant security changes.</p>
 </div>
 """,
             unsafe_allow_html=True,
         )
 
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Assessment Scenarios", len(assessment_scenarios))
-        m2.metric("Dynamic Validation Use Cases", len(DYNAMIC_SCENARIOS))
-        m3.metric("Reports", len(reports))
-
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2, gap="large")
 
         with col1:
-            if st.button(
-                "Assessment\n\nExisting ZTVP checks: pillar, category, scope, scenario. Keep your current baseline and configuration assessment work.",
-                type="primary",
-                use_container_width=True,
-            ):
-                st.session_state.home_mode = "assessment"
-                st.rerun()
+            with st.container(border=True):
+                st.markdown(
+                    """
+<div class="ztvp-home-module-card"></div>
+<div class="ztvp-feature-icon">🧪</div>
+<div class="ztvp-container-card-title">Dynamic Validation</div>
+<p class="ztvp-container-card-text">Run controlled scenarios with endpoint actions, tenant logs, Defender evidence, and clean verdicts.</p>
+<div class="ztvp-home-badge-row">
+  <span class="ztvp-home-badge">Controlled tests</span>
+  <span class="ztvp-home-badge">Tenant evidence</span>
+  <span class="ztvp-home-badge">Endpoint actions</span>
+  <span class="ztvp-home-badge">Clean verdicts</span>
+</div>
+<div class="ztvp-home-action"></div>
+""",
+                    unsafe_allow_html=True,
+                )
+
+                if st.button("Open Dynamic Validation", type="primary"):
+                    st.session_state.home_mode = "dynamic"
+                    st.session_state.dynamic_pillar = None
+                    st.session_state.dynamic_scenario_id = None
+                    st.session_state.pop("ztvp_dynamic_open_scenario", None)
+                    st.rerun()
 
         with col2:
-            if st.button(
-                "Dynamic Validation\n\nReal-life validation use cases with decoys, controlled actions, Microsoft logs, CA decisions, Defender evidence, and expected outcomes.",
-                use_container_width=True,
-            ):
-                st.session_state.home_mode = "dynamic"
-                st.session_state.dynamic_pillar = None
-                st.session_state.dynamic_scenario_id = None
-                st.rerun()
+            with st.container(border=True):
+                st.markdown(
+                    """
+<div class="ztvp-home-module-card"></div>
+<div class="ztvp-feature-icon">🔮</div>
+<div class="ztvp-container-card-title">Simulation</div>
+<p class="ztvp-container-card-text">Preview planned changes and understand likely tenant impact before configuration updates.</p>
+<div class="ztvp-home-badge-row">
+  <span class="ztvp-home-badge">Planned changes</span>
+  <span class="ztvp-home-badge">Impact preview</span>
+  <span class="ztvp-home-badge">Risk review</span>
+  <span class="ztvp-home-badge">Consultant notes</span>
+</div>
+<div class="ztvp-home-action"></div>
+""",
+                    unsafe_allow_html=True,
+                )
 
-        with col3:
-            if st.button(
-                "Simulation\n\nFuture what-if module for previewing planned tenant or AD changes before applying them.",
-                use_container_width=True,
-            ):
-                st.session_state.home_mode = "simulation"
-                st.rerun()
+                if st.button("Open Simulation", type="primary"):
+                    st.session_state.home_mode = "simulation"
+                    st.rerun()
 
-        st.markdown("## Detected Tenant Capabilities")
+        st.markdown('<div class="ztvp-capabilities-section"><h3>Detected Tenant Capabilities</h3></div>', unsafe_allow_html=True)
 
         cap_rows = []
         for cap_name, detected_value in detected_caps.items():
@@ -1296,7 +1815,7 @@ if page == "Home":
         with col3:
             scope = st.selectbox("Scope", ordered_unique(category_items, "Scope", SCOPE_ORDER))
 
-        filtered = [s for s in category_items if s.get("Scope") == scope]
+        filtered = [s for s in category_items if get_dynamic_scope(s) == scope]
 
         rows = []
         for s in filtered:
@@ -1357,224 +1876,39 @@ if page == "Home":
         else:
             st.warning("No READY assessment scenarios in this selection.")
 
+
+
+
     elif st.session_state.home_mode == "dynamic":
-        hero(
-            "Dynamic Validation",
-            "Choose a pillar, then review real-life validation scenarios using decoys, controlled actions, and Microsoft evidence.",
+        render_dynamic_validation_page(
+            scenarios=DYNAMIC_SCENARIOS,
+            caps=caps,
+            project_root=PROJECT_ROOT,
+            hero=hero,
+            badge=badge,
+            dynamic_support=dynamic_support,
+            render_idc001_runner=render_idc001_runner,
         )
-
-        if st.button("← Back to Home"):
-            st.session_state.home_mode = "home"
-            st.session_state.dynamic_pillar = None
-            st.session_state.dynamic_scenario_id = None
-            st.rerun()
-
-        if st.session_state.dynamic_pillar is None:
-            st.markdown("## Choose a Pillar")
-
-            pillar_names = ["Identity", "Endpoint", "Applications"]
-            cols = st.columns(3)
-
-            for index, pillar_name in enumerate(pillar_names):
-                pillar_items = [s for s in DYNAMIC_SCENARIOS if s["pillar"] == pillar_name]
-                supported_count = len([s for s in pillar_items if dynamic_support(s, caps) == "SUPPORTED"])
-                limited_count = len(pillar_items) - supported_count
-
-                with cols[index]:
-                    if st.button(
-                        f"{pillar_name}\n\n{len(pillar_items)} scenario(s). {supported_count} supported, {limited_count} limited based on discovered capabilities.",
-                        key=f"open_dynamic_{pillar_name}",
-                        use_container_width=True,
-                    ):
-                        st.session_state.dynamic_pillar = pillar_name
-                        st.session_state.dynamic_scenario_id = None
-                        st.rerun()
-
-            st.markdown("## What Dynamic Validation Means")
-            st.markdown(
-                """
-<div class="ztvp-card">
-    <h3>Not just configuration checking</h3>
-    <p>
-        Dynamic Validation is the evidence-based layer. It uses decoy users, test devices,
-        controlled sign-ins, app consent attempts, Defender signals, audit logs, Conditional Access decisions,
-        and Microsoft telemetry to prove whether controls work in real life.
-    </p>
-</div>
-""",
-                unsafe_allow_html=True,
-            )
-
-        else:
-            selected_pillar = st.session_state.dynamic_pillar
-            pillar_items = [s for s in DYNAMIC_SCENARIOS if s["pillar"] == selected_pillar]
-
-            if st.button("← Back to Pillars"):
-                st.session_state.dynamic_pillar = None
-                st.session_state.dynamic_scenario_id = None
-                st.rerun()
-
-            st.markdown(f"## {esc(selected_pillar)} Dynamic Validation Scenarios")
-
-            supported_items = [s for s in pillar_items if dynamic_support(s, caps) == "SUPPORTED"]
-            limited_items = [s for s in pillar_items if dynamic_support(s, caps) == "LIMITED"]
-
-            a, b, c = st.columns(3)
-            a.metric("Total Scenarios", len(pillar_items))
-            b.metric("Supported", len(supported_items))
-            c.metric("Limited", len(limited_items))
-
-            st.markdown("### Scenarios")
-
-            for scenario in pillar_items:
-                support = dynamic_support(scenario, caps)
-                support_kind = "good" if support == "SUPPORTED" else "warn"
-                priority_kind = "bad" if scenario["priority"] == "Critical" else "warn"
-
-                st.markdown(
-                    f"""
-<div class="ztvp-card">
-    <h3>{esc(scenario["id"])} — {esc(scenario["name"])}</h3>
-    <p class="ztvp-muted">{esc(scenario["use_case"])}</p>
-    <p>{esc(scenario["goal"])}</p>
-    {badge("DYNAMIC VALIDATION", "info")}
-    {badge(scenario["status"], "warn")}
-    {badge(scenario["priority"], priority_kind)}
-    {badge(support, support_kind)}
-</div>
-""",
-                    unsafe_allow_html=True,
-                )
-
-                if st.button(
-                    f"Open {scenario['id']}",
-                    key=f"open_dynamic_scenario_{scenario['id']}",
-                    use_container_width=True,
-                ):
-                    st.session_state.dynamic_scenario_id = scenario["id"]
-                    st.rerun()
-
-            if st.session_state.dynamic_scenario_id:
-                selected_list = [s for s in pillar_items if s["id"] == st.session_state.dynamic_scenario_id]
-
-                if selected_list:
-                    selected = selected_list[0]
-                    support = dynamic_support(selected, caps)
-
-                    st.markdown("---")
-                    st.markdown("## Selected Scenario")
-
-                    st.markdown(
-                        f"""
-<div class="ztvp-card">
-    <h2>{esc(selected["id"])} — {esc(selected["name"])}</h2>
-    <p>{esc(selected["goal"])}</p>
-    {badge("DYNAMIC VALIDATION", "info")}
-    {badge(selected["status"], "warn")}
-    {badge(selected["priority"], "bad" if selected["priority"] == "Critical" else "warn")}
-    {badge(support, "good" if support == "SUPPORTED" else "warn")}
-</div>
-""",
-                        unsafe_allow_html=True,
-                    )
-
-                    left, right = st.columns(2)
-
-                    with left:
-                        st.markdown(
-                            f"""
-<div class="ztvp-card">
-    <h3>Controlled Test</h3>
-    <p><b>Use case</b><br>{esc(selected["use_case"])}</p>
-    <p><b>Decoys / test objects</b><br>{esc(selected["decoys"])}</p>
-    <p><b>Controlled action</b><br>{esc(selected["test_action"])}</p>
-</div>
-""",
-                            unsafe_allow_html=True,
-                        )
-
-                    with right:
-                        st.markdown(
-                            f"""
-<div class="ztvp-card">
-    <h3>Evidence Model</h3>
-    <p><b>Evidence sources</b><br>{esc(selected["evidence"])}</p>
-    <p><b>Expected result</b><br>{esc(selected["expected"])}</p>
-</div>
-""",
-                            unsafe_allow_html=True,
-                        )
-
-                    st.markdown("### Required Capabilities")
-
-                    req_rows = []
-                    for required in selected.get("requires", []):
-                        req_rows.append(
-                            {
-                                "Capability": required,
-                                "Detected": "YES" if caps.get(required, False) else "NO",
-                            }
-                        )
-
-                    st.dataframe(pd.DataFrame(req_rows), use_container_width=True, hide_index=True)
-
-                    if support == "SUPPORTED":
-                        st.info("This scenario is supported by the discovered tenant capabilities. Next step is to implement the probe engine.")
-                    else:
-                        st.warning("This scenario is limited for this tenant because one or more required capabilities were not detected.")
-
-                    st.markdown(
-                        """
-<div class="warn-box">
-    <b>Implementation next step:</b><br>
-    Build the probe engine for this scenario: create/use decoys, run the controlled action,
-    collect Microsoft evidence, compare actual result with expected result, then export an evidence report.
-</div>
-""",
-                        unsafe_allow_html=True,
-                    )
 
     elif st.session_state.home_mode == "simulation":
-        hero(
-            "Simulation",
-            "Future what-if module for previewing planned changes before applying them.",
-        )
+        render_simulation_page(PROJECT_ROOT)
 
-        if st.button("← Back to Home"):
-            st.session_state.home_mode = "home"
-            st.rerun()
-
-        st.markdown(
-            """
-<div class="warn-box">
-    <b>Simulation is planned for a later phase.</b><br>
-    It will help consultants preview what may happen before changing a tenant or AD environment.
-    First priority is implementing Dynamic Validation probe engines.
-</div>
-""",
-            unsafe_allow_html=True,
-        )
-
-        st.write("Future simulation flow:")
-        st.write("1. Select pillar/use case/scenario.")
-        st.write("2. Load current evidence.")
-        st.write("3. Define planned change.")
-        st.write("4. Preview expected impact.")
-        st.write("5. Apply manually.")
-        st.write("6. Re-run validation.")
-
+elif page == "Active Runs":
+    render_active_runs_page(PROJECT_ROOT, hero=hero)
 
 elif page == "Reports":
     hero(
         "Reports",
-        "Review saved assessment reports and evidence.",
+        "In production, not ready yet.",
     )
 
-    if not reports:
-        st.info("No reports found yet.")
-        st.stop()
-
-    selected_report = st.selectbox("Select report", reports, format_func=lambda p: p.name)
-    render_report(load_report(selected_report))
-
+    st.markdown(
+        """
+<div class="ztvp-card">
+    <h2>Reports workspace</h2>
+    <p>This page is in production and is not ready yet.</p>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
