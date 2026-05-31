@@ -9,12 +9,17 @@ from typing import Any
 
 import streamlit as st
 
+from background_jobs import get_active_run, start_scenario_job
+from html_report import write_standard_html_report
+from run_state import ACTIVE_STATUSES, request_cancel, selected_run_for_scenario
+
 
 STATUS_LABELS = {
-    "PASS_ANONYMOUS_SHARING_LINK_BLOCKED": "PASS — Anonymous Sharing Blocked",
-    "FAIL_ANONYMOUS_SHARING_LINK_ALLOWED": "FAIL — Anonymous Sharing Link Allowed",
-    "PARTIAL_ANONYMOUS_LINK_NOT_CREATED": "PARTIAL — Link Not Created",
+    "PASS_ANONYMOUS_SHARING_LINK_BLOCKED": "PASS — Anonymous sharing link blocked",
+    "FAIL_ANONYMOUS_SHARING_LINK_ALLOWED": "FAIL — Anonymous sharing link allowed",
+    "PARTIAL_ANONYMOUS_LINK_NOT_CREATED": "PARTIAL — Anonymous link was not created, but the denial reason is unclear",
     "PARTIAL_TEST_ERROR": "PARTIAL — Test Error",
+    "ERROR_TEST_SETUP_FAILED": "ERROR — SharePoint createLink setup failed",
 }
 
 
@@ -115,6 +120,99 @@ def _metric(label: str, value: object, tone: str = "") -> str:
 """
 
 
+def _yes_no(value: object, unknown: str = "Unknown") -> str:
+    if value is True:
+        return "Yes"
+    if value is False:
+        return "No"
+    text = str(value or "").strip().lower()
+    if text in {"true", "yes", "1"}:
+        return "Yes"
+    if text in {"false", "no", "0"}:
+        return "No"
+    return unknown
+
+
+def _safe_existing_path(project_root: Path, raw_path: object) -> Path | None:
+    if raw_path is None:
+        return None
+    text = str(raw_path).strip()
+    if not text or text.lower() in {"none", "null"}:
+        return None
+    path = Path(text)
+    if not path.is_absolute():
+        path = project_root / path
+    return path if path.exists() and path.is_file() else None
+
+
+def _status_verdict(status: object) -> str:
+    text = str(status or "").upper()
+    if text.startswith("PASS"):
+        return "PASS"
+    if text.startswith("FAIL"):
+        return "FAIL"
+    if text.startswith("ERROR"):
+        return "ERROR"
+    return "PARTIAL"
+
+
+def _render_active_run_panel(project_root: Path, run: dict) -> None:
+    if not run:
+        return
+    status = str(run.get("status") or "").lower()
+    elapsed = int(run.get("elapsed_seconds") or 0)
+    remaining = int(run.get("remaining_seconds") or 0)
+    _alert("APP-DV-008 validation is currently running." if status in ACTIVE_STATUSES else f"APP-DV-008 run is {status}.", "info" if status in ACTIVE_STATUSES else "warn")
+    st.markdown(
+        f"""
+<div class="ztvp-grid-3">
+    {_metric("Phase", run.get("phase", "N/A"))}
+    {_metric("Progress", f"{int(run.get('progress_percent') or 0)}%")}
+    {_metric("Tenant evidence", run.get("tenant_evidence_status", "N/A"))}
+</div>
+<div class="ztvp-grid-3">
+    {_metric("Target site", run.get("target_site") or run.get("target") or "Root site")}
+    {_metric("Dummy file", run.get("dummy_file", "Pending"))}
+    {_metric("Link attempt", run.get("anonymous_link_attempt_status", "Starting"))}
+</div>
+<div class="ztvp-grid-3">
+    {_metric("Cleanup", run.get("cleanup_status", "Not completed yet"))}
+    {_metric("Elapsed", f"{elapsed}s")}
+    {_metric("Remaining", f"{remaining}s")}
+</div>
+<div class="ztvp-grid">
+    {_metric("Message", run.get("current_message", "N/A"))}
+    {_metric("Run ID", run.get("run_id", "N/A"))}
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Open Active Runs", key="cld001_open_active_runs", use_container_width=True):
+            st.session_state["pending_navigation"] = {"main_navigation": "Active Runs"}
+            st.rerun()
+    with col2:
+        if status in ACTIVE_STATUSES and st.button("Cancel APP-DV-008 run", key="cld001_cancel_run", use_container_width=True):
+            request_cancel(project_root, str(run.get("run_id") or ""))
+            st.rerun()
+
+
+def _render_selected_run(project_root: Path, run: dict) -> bool:
+    report_path = _safe_existing_path(project_root, run.get("report_path") or run.get("report_json_path"))
+    html_path = _safe_existing_path(project_root, run.get("html_report_path") or run.get("report_html_path"))
+    if report_path is None:
+        return False
+    report = _load_json(report_path)
+    if html_path is None:
+        html_path = report_path.with_suffix(".html")
+        if not html_path.exists():
+            write_standard_html_report(report, html_path)
+    st.markdown("### Selected APP-DV-008 run")
+    _render_report(report, report_path, html_path, "")
+    return True
+
+
 def _write_html_report(report: dict, html_path: Path) -> None:
     html_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -134,7 +232,7 @@ def _write_html_report(report: dict, html_path: Path) -> None:
 <html>
 <head>
 <meta charset="utf-8">
-<title>CLD-C-001 - SharePoint Anonymous Sharing Link Exposure Validation</title>
+<title>APP-DV-008 - SharePoint Anonymous Sharing Link Exposure Validation</title>
 <style>
 body {{ background:#f4f7fb; color:#0f172a; font-family:Segoe UI,Arial,sans-serif; margin:0; }}
 .container {{ max-width:1180px; margin:32px auto; padding:0 24px; }}
@@ -150,7 +248,7 @@ pre {{ background:#0f172a; color:#e5e7eb; padding:18px; border-radius:16px; over
 <body>
 <div class="container">
 <div class="hero">
-<h1>CLD-C-001 - SharePoint Anonymous Sharing Link Exposure Validation</h1>
+<h1>APP-DV-008 - SharePoint Anonymous Sharing Link Exposure Validation</h1>
 <p>Cloud Apps evidence report</p>
 </div>
 
@@ -217,6 +315,10 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
 
     status = report.get("status")
     tone = _tone_for_status(status)
+    link_created = bool(metrics.get("anonymous_link_created") or attempt.get("link_created"))
+    link_denied = bool(metrics.get("anonymous_link_denied") or attempt.get("link_denied"))
+    denial_reason = attempt.get("error_message") or attempt.get("error_category") or "Not applicable"
+    cleanup_completed = bool(metrics.get("cleanup_completed") or str(cleanup.get("status") or "").lower() == "completed")
 
     _alert("Cloud app anonymous sharing validation completed.", "good" if tone == "good" else tone)
 
@@ -230,10 +332,15 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
     st.markdown(
         f"""
 <div class="ztvp-grid">
-    {_metric("Status", _friendly_status(status), tone)}
+    {_metric("Verdict", _friendly_status(status), tone)}
     {_metric("Risk", report.get("risk", "Unknown"), tone)}
-    {_metric("Anonymous Link Created", metrics.get("anonymous_link_created", False), "bad" if metrics.get("anonymous_link_created") else "good")}
-    {_metric("Cleanup Completed", metrics.get("cleanup_completed", False), "good" if metrics.get("cleanup_completed") else "bad")}
+    {_metric("Anonymous link created", "Yes" if link_created else "No", "bad" if link_created else "good")}
+    {_metric("Link blocked/denied", "Yes" if link_denied else "No", "good" if link_denied else "bad" if link_created else "warn")}
+</div>
+<div class="ztvp-grid-3">
+    {_metric("Denial reason", denial_reason, "good" if link_denied else "warn")}
+    {_metric("Cleanup completed", "Yes" if cleanup_completed else "No", "good" if cleanup_completed else "bad")}
+    {_metric("Public URL stored", "No", "good")}
 </div>
 """,
         unsafe_allow_html=True,
@@ -255,12 +362,6 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
         unsafe_allow_html=True,
     )
 
-    st.markdown("#### Anonymous Link Attempt")
-    st.json(attempt)
-
-    st.markdown("#### Cleanup Record")
-    st.json(cleanup)
-
     if warnings:
         st.markdown("#### Warnings")
         for warning in warnings:
@@ -277,7 +378,7 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
         st.download_button(
             "Download JSON Report",
             data=report_path.read_bytes(),
-            file_name="CLD-C-001-result.json",
+            file_name="APP-DV-008-result.json",
             mime="application/json",
             use_container_width=True,
         )
@@ -286,26 +387,46 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
         st.download_button(
             "Download HTML Report",
             data=html_path.read_bytes(),
-            file_name="CLD-C-001-result.html",
+            file_name="APP-DV-008-result.html",
             mime="text/html",
             use_container_width=True,
         )
 
-    with st.expander("View full evidence JSON"):
+    with st.expander("Technical evidence details"):
+        st.markdown("Anonymous Link Attempt")
+        st.json(attempt)
+        st.markdown("Cleanup Record")
+        st.json(cleanup)
+        st.markdown("Full evidence JSON")
         st.json(report)
 
-    with st.expander("PowerShell output"):
-        st.code(stdout or "No PowerShell output captured.", language="text")
+    if stdout:
+        with st.expander("PowerShell output"):
+            st.code(stdout or "No PowerShell output captured.", language="text")
 
 
 def render_cld001_runner(project_root: Path) -> None:
     project_root = Path(project_root)
     _css()
 
+    requested_run_id = st.session_state.get("ztvp_dynamic_open_run_id")
+    active_run = get_active_run(project_root, "APP-DV-008", str(requested_run_id or "") or None)
+    selected_run = selected_run_for_scenario(project_root, "APP-DV-008", str(requested_run_id or "") or None)
+    if active_run:
+        _render_active_run_panel(project_root, active_run)
+        return
+    if selected_run and str(selected_run.get("status") or "").lower() not in ACTIVE_STATUSES:
+        rendered_selected = _render_selected_run(project_root, selected_run)
+        if requested_run_id and rendered_selected:
+            return
+        if rendered_selected:
+            st.markdown("---")
+            st.markdown("### Start a new APP-DV-008 run")
+
     st.markdown(
         """
 <div class="ztvp-hero">
-    <h2>CLD-C-001 — SharePoint Anonymous Sharing Link Exposure Validation</h2>
+    <h2>APP-DV-008 — SharePoint Anonymous Sharing Link Exposure Validation</h2>
     <p>This validation creates a temporary dummy SharePoint file, attempts to create an anonymous sharing link, and cleans up the test object.</p>
 </div>
 """,
@@ -367,33 +488,26 @@ def render_cld001_runner(project_root: Path) -> None:
             "-RequestedLinkType", link_type,
         ]
 
-        with st.spinner("Creating dummy SharePoint test file, attempting anonymous link creation, and cleaning up..."):
-            completed = _run_powershell(project_root, invoke_script, args, timeout=1200)
-
-        report_path = project_root / "powershell" / "Reports" / "Dynamic" / "CLD-C-001-result.json"
-        html_path = project_root / "powershell" / "Reports" / "Dynamic" / "Html" / "CLD-C-001-result.html"
-
-        if completed.returncode != 0:
-            _alert("CLD-C-001 validation failed.", "bad")
-            error_output = f"Return code: {completed.returncode}\n\n--- STDERR ---\n{completed.stderr or ''}\n\n--- STDOUT ---\n{completed.stdout or ''}"
-            st.code(error_output.strip() or "No PowerShell output captured.", language="text")
-            return
-
-        if not report_path.exists():
-            _alert("Validation completed, but the JSON report was not found.", "warn")
-            st.code(completed.stdout, language="text")
-            return
-
-        report = _load_json(report_path)
-        _write_html_report(report, html_path)
-        _render_report(report, report_path, html_path, completed.stdout)
+        target_label = "Root site" if site_mode == "Root site" else site_id.strip()
+        run = start_scenario_job(
+            project_root,
+            "APP-DV-008",
+            wait_minutes=5,
+            poll_seconds=5,
+            extra_args=args,
+            target=target_label,
+            tenant="Microsoft 365 tenant",
+        )
+        st.session_state["ztvp_dynamic_open_run_id"] = run.get("run_id")
+        _alert("APP-DV-008 started as a background Active Run. You can leave this page while it finishes.", "good")
+        st.rerun()
 
     st.markdown("### 3. Emergency cleanup")
 
     if state_path.exists():
-        _alert("An active CLD-C-001 cleanup state exists. Use emergency cleanup if automatic cleanup failed.", "warn")
+        _alert("An active APP-DV-008 cleanup state exists. Use emergency cleanup if automatic cleanup failed.", "warn")
 
-        if st.button("Run Emergency Cleanup for CLD-C-001", use_container_width=True):
+        if st.button("Run Emergency Cleanup for APP-DV-008", use_container_width=True):
             with st.spinner("Cleaning up temporary SharePoint test object..."):
                 completed = _run_powershell(project_root, cleanup_script, [], timeout=1200)
 
@@ -406,4 +520,5 @@ def render_cld001_runner(project_root: Path) -> None:
                 st.code(completed.stdout, language="text")
                 st.rerun()
     else:
-        _alert("No active CLD-C-001 cleanup state exists.", "good")
+        _alert("No active APP-DV-008 cleanup state exists.", "good")
+

@@ -2,8 +2,8 @@ param(
     [string]$UserPrefix = "ztvp-devdv001-decoy",
     [string]$DisplayName = "ZTVP DEV-DV-001 Unmanaged Device Decoy User",
     [string]$TenantDomain = "",
-    [string]$TargetName = "Microsoft 365 My Apps",
-    [string]$TargetUrl = "https://myapps.microsoft.com",
+    [string]$TargetName = "Microsoft 365 Portal",
+    [string]$TargetUrl = "https://microsoft365.com",
     [string]$ExpectedBlockingPolicy = ""
 )
 
@@ -70,6 +70,27 @@ function New-ZTVPRandomSuffix {
     return $out
 }
 
+function Get-ZTVPSharePointRootUrl {
+    param(
+        [object[]]$VerifiedDomains,
+        [string]$TenantDomain
+    )
+
+    $onMicrosoftDomain = @($VerifiedDomains | Where-Object { [string]$_.name -like "*.onmicrosoft.com" } | Select-Object -First 1).name
+
+    if ([string]::IsNullOrWhiteSpace($onMicrosoftDomain)) {
+        $onMicrosoftDomain = $TenantDomain
+    }
+
+    $tenantName = ([string]$onMicrosoftDomain).Split(".")[0]
+
+    if ([string]::IsNullOrWhiteSpace($tenantName)) {
+        return "https://<tenant-name>.sharepoint.com"
+    }
+
+    return "https://$tenantName.sharepoint.com"
+}
+
 $ctx = Ensure-ZTVPGraphConnection -Scopes $RequiredScopes
 
 $reportRoot = Join-Path (Get-Location) "powershell\Reports\Dynamic"
@@ -89,16 +110,31 @@ if (Test-Path $statePath) {
 $runId = Get-Date -Format "yyyyMMdd-HHmmss"
 $suffix = New-ZTVPRandomSuffix
 
+$verifiedDomains = @()
+
 if ([string]::IsNullOrWhiteSpace($TenantDomain)) {
     $org = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/organization"
-    $domains = @($org.value[0].verifiedDomains)
-    $defaultDomain = $domains | Where-Object { $_.isDefault -eq $true } | Select-Object -First 1
+    $verifiedDomains = @($org.value[0].verifiedDomains)
+    $defaultDomain = $verifiedDomains | Where-Object { $_.isDefault -eq $true } | Select-Object -First 1
 
     if (-not $defaultDomain) {
         throw "Could not auto-detect tenant default domain. Provide TenantDomain manually."
     }
 
     $TenantDomain = [string]$defaultDomain.name
+}
+else {
+    try {
+        $org = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/organization"
+        $verifiedDomains = @($org.value[0].verifiedDomains)
+    }
+    catch {
+        $verifiedDomains = @([PSCustomObject]@{ name = $TenantDomain })
+    }
+}
+
+if ($TargetName -eq "SharePoint Online" -and [string]::IsNullOrWhiteSpace($TargetUrl)) {
+    $TargetUrl = Get-ZTVPSharePointRootUrl -VerifiedDomains $verifiedDomains -TenantDomain $TenantDomain
 }
 
 $mailNickname = "$UserPrefix-$runId-$suffix" -replace "[^a-zA-Z0-9-]", ""

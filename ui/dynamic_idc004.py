@@ -436,7 +436,7 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
         st.download_button(
             "Download JSON Report",
             data=report_path.read_bytes(),
-            file_name="ID-C-004-result.json",
+            file_name="ID-DV-004-result.json",
             mime="application/json",
             use_container_width=True,
         )
@@ -445,7 +445,7 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
         st.download_button(
             "Download HTML Report",
             data=html_path.read_bytes(),
-            file_name="ID-C-004-result.html",
+            file_name="ID-DV-004-result.html",
             mime="text/html",
             use_container_width=True,
         )
@@ -464,7 +464,7 @@ def render_idc004_runner(project_root: Path) -> None:
     st.markdown(
         """
 <div class="ztvp-hero">
-    <h2>ID-C-004 — OAuth App Consent Exposure Validation</h2>
+    <h2>ID-DV-004 — OAuth App Consent Exposure Validation</h2>
     <p>This validation creates a controlled test app and proves whether a standard decoy user can grant OAuth delegated permissions without administrator approval.</p>
 </div>
 <div class="ztvp-roadmap">
@@ -515,19 +515,19 @@ def render_idc004_runner(project_root: Path) -> None:
         st.markdown("**Controlled test application**")
         st.markdown(f'<div class="ztvp-codebox">{_safe(app.get("display_name", ""))}<br>App ID: {_safe(app.get("app_id", ""))}</div>', unsafe_allow_html=True)
 
-        with st.expander("View active ID-C-004 state"):
+        with st.expander("View active ID-DV-004 state"):
             st.json(state)
     else:
-        _alert("No active ID-C-004 run exists. Generate a fresh decoy and temporary OAuth test app.", "info")
+        _alert("No active ID-DV-004 run exists. Generate a fresh decoy and temporary OAuth test app.", "info")
 
         with st.container(border=True):
             _alert("ZTVP will create two temporary things: a test user and a test app. You can usually leave these values unchanged.", "info")
             _field_note("Start of the temporary user's email/sign-in name. Leave the default unless you want a different test-user name.")
             prefix = st.text_input("Temporary user email prefix", value="ztvp-idc004-oauthconsent", key="idc004_prefix")
             _field_note("Name shown for the temporary user in Entra. This does not change the test.")
-            display = st.text_input("Temporary user display name", value="ZTVP ID-C-004 OAuth Consent Decoy User", key="idc004_display")
+            display = st.text_input("Temporary user display name", value="ZTVP ID-DV-004 OAuth Consent Decoy User", key="idc004_display")
             _field_note("Name shown for the temporary test app. Leave the default so it is easy to find and clean up.")
-            app_prefix = st.text_input("Temporary app name prefix", value="ZTVP ID-C-004 OAuth Consent Test App", key="idc004_app_prefix")
+            app_prefix = st.text_input("Temporary app name prefix", value="ZTVP ID-DV-004 OAuth Consent Test App", key="idc004_app_prefix")
             _field_note("Country code Microsoft requires before assigning a license. Keep TN for Tunisia. Use US for United States.")
             usage = st.text_input("Country code", value="TN", max_chars=2, key="idc004_usage")
             _field_note("Permission the test app will ask for. Leave User.Read; it only asks to read the signed-in user's basic profile.")
@@ -536,8 +536,8 @@ def render_idc004_runner(project_root: Path) -> None:
             if st.button("Generate Temporary User and Test App", type="primary", use_container_width=True):
                 args = [
                     "-DecoyAliasPrefix", prefix.strip() or "ztvp-idc004-oauthconsent",
-                    "-DecoyDisplayName", display.strip() or "ZTVP ID-C-004 OAuth Consent Decoy User",
-                    "-AppDisplayNamePrefix", app_prefix.strip() or "ZTVP ID-C-004 OAuth Consent Test App",
+                    "-DecoyDisplayName", display.strip() or "ZTVP ID-DV-004 OAuth Consent Decoy User",
+                    "-AppDisplayNamePrefix", app_prefix.strip() or "ZTVP ID-DV-004 OAuth Consent Test App",
                     "-UsageLocation", usage.strip().upper() or "TN",
                     "-RequestedScope", requested_scope.strip() or "https://graph.microsoft.com/User.Read",
                 ]
@@ -546,11 +546,11 @@ def render_idc004_runner(project_root: Path) -> None:
                     completed = _run_powershell(project_root, prepare_script, args, timeout=1200)
 
                 if completed.returncode != 0:
-                    _alert("ID-C-004 preparation failed.", "bad")
+                    _alert("ID-DV-004 preparation failed.", "bad")
                     error_output = f"Return code: {completed.returncode}\n\n--- STDERR ---\n{completed.stderr or ''}\n\n--- STDOUT ---\n{completed.stdout or ''}"
                     st.code(error_output.strip() or "No PowerShell output captured.", language="text")
                 else:
-                    _alert("ID-C-004 preparation completed.", "good")
+                    _alert("ID-DV-004 preparation completed.", "good")
                     st.code(completed.stdout, language="text")
 
                     if secret_once_path.exists():
@@ -659,7 +659,7 @@ Microsoft should show admin approval required, consent blocked, or your organiza
             html_path = project_root / "powershell" / "Reports" / "Dynamic" / "Html" / "ID-C-004-result.html"
 
             if completed.returncode != 0:
-                _alert("ID-C-004 validation failed.", "bad")
+                _alert("ID-DV-004 validation failed.", "bad")
                 error_output = f"Return code: {completed.returncode}\n\n--- STDERR ---\n{completed.stderr or ''}\n\n--- STDOUT ---\n{completed.stdout or ''}"
                 st.code(error_output.strip() or "No PowerShell output captured.", language="text")
                 return
@@ -682,7 +682,7 @@ Microsoft should show admin approval required, consent blocked, or your organiza
     has_active = bool(decoy.get("id")) and cleanup.get("status", "Pending") != "Completed"
 
     if not has_active:
-        _alert("No active ID-C-004 run exists.", "info")
+        _alert("No active ID-DV-004 run exists.", "info")
         return
 
     with st.container(border=True):
@@ -707,11 +707,11 @@ Microsoft should show admin approval required, consent blocked, or your organiza
                 completed = _run_powershell(project_root, cleanup_script, args, timeout=1200)
 
             if completed.returncode != 0:
-                _alert("ID-C-004 cleanup failed.", "bad")
+                _alert("ID-DV-004 cleanup failed.", "bad")
                 error_output = f"Return code: {completed.returncode}\n\n--- STDERR ---\n{completed.stderr or ''}\n\n--- STDOUT ---\n{completed.stdout or ''}"
                 st.code(error_output.strip() or "No PowerShell output captured.", language="text")
             else:
-                _alert("ID-C-004 cleanup completed.", "good")
+                _alert("ID-DV-004 cleanup completed.", "good")
                 st.code(completed.stdout, language="text")
 
                 for key in ["idc004_temp_upn", "idc004_temp_password"]:

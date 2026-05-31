@@ -121,6 +121,32 @@ function Get-ZTVPFirstValue {
     return ""
 }
 
+function Test-ZTVPDevDv008AlertRow {
+    param([object]$Row)
+
+    if ($null -eq $Row) { return $false }
+
+    $title = [string]$Row.Title
+    if ([string]::IsNullOrWhiteSpace($title) -and $Row.PSObject.Properties["AlertTitle"]) { $title = [string]$Row.AlertTitle }
+    $category = [string]$Row.Category
+    if ([string]::IsNullOrWhiteSpace($category) -and $Row.PSObject.Properties["AlertCategory"]) { $category = [string]$Row.AlertCategory }
+    $detectionSource = [string]$Row.DetectionSource
+    if ([string]::IsNullOrWhiteSpace($detectionSource) -and $Row.PSObject.Properties["AlertDetectionSource"]) { $detectionSource = [string]$Row.AlertDetectionSource }
+    if ([string]::IsNullOrWhiteSpace($detectionSource) -and $Row.PSObject.Properties["EvidenceDetectionSource"]) { $detectionSource = [string]$Row.EvidenceDetectionSource }
+    $serviceSource = [string]$Row.ServiceSource
+
+    $combined = "$title $category $detectionSource $serviceSource"
+    if ($combined -match "EICAR|EICAR_Test_File|Virus:DOS/EICAR|malware was prevented") { return $false }
+    if ($category -match "^Malware$" -and $title -match "EICAR|malware") { return $false }
+
+    if ($title -match "Microsoft Defender Antivirus tampering|Defender Antivirus tampering|Antivirus tampering|Defender tampering|tampering") { return $true }
+    if ($category -match "DefenseEvasion|Defense Evasion") { return $true }
+    if ($detectionSource -match "EDR") { return $true }
+    if ($combined -match "T1562\.001|Disable or Modify Tools|Set-MpPreference|DisableRealtimeMonitoring|DisableBehaviorMonitoring|DisableIOAVProtection|DisableBlockAtFirstSeen|TamperProtectionConfigChangeAttempt|TamperingAttempt") { return $true }
+
+    return $false
+}
+
 function Test-ZTVPTamperTimelineEvent {
     param([object]$Row)
 
@@ -393,10 +419,11 @@ AlertEvidence
             $queryAlerts = @"
 AlertInfo
 | where Timestamp >= datetime($window)
+| where not(Title has_any ("EICAR", "EICAR_Test_File", "Virus:DOS/EICAR", "malware was prevented"))
+| where not(Category =~ "Malware" and Title has_any ("EICAR", "malware"))
 | where Title has_any ("Microsoft Defender Antivirus tampering", "tampering", "Defender Antivirus tampering", "Antivirus tampering", "Defender tampering")
    or Category has_any ("DefenseEvasion", "Defense Evasion")
-   or DetectionSource has_any ("EDR", "Antivirus")
-   or ServiceSource has "Microsoft Defender for Endpoint"
+   or DetectionSource has "EDR"
 | project Timestamp, AlertId, Title, Severity, Category, ServiceSource, DetectionSource
 "@
 
@@ -407,12 +434,13 @@ AlertEvidence
 | join kind=leftouter (
     AlertInfo
     | where Timestamp >= datetime($window)
+    | where not(Title has_any ("EICAR", "EICAR_Test_File", "Virus:DOS/EICAR", "malware was prevented"))
+    | where not(Category =~ "Malware" and Title has_any ("EICAR", "malware"))
     | project AlertId, AlertTimestamp=Timestamp, Title, Severity, Category, ServiceSource, AlertDetectionSource=DetectionSource
 ) on AlertId
 | where Title has_any ("Microsoft Defender Antivirus tampering", "tampering", "Defender tampering", "Antivirus tampering")
    or Category has_any ("DefenseEvasion", "Defense Evasion")
-   or AlertDetectionSource has_any ("EDR", "Antivirus")
-   or ServiceSource has "Microsoft Defender for Endpoint"
+   or AlertDetectionSource has "EDR"
 | project Timestamp, AlertTimestamp, AlertId, Title, Severity, Category, EvidenceDetectionSource=DetectionSource, AlertDetectionSource, ServiceSource, DeviceName, EntityType, EvidenceRole, AccountName, AccountDomain
 "@
 
@@ -431,18 +459,18 @@ DeviceRegistryEvents
             $parsedTamperTimelineEvidence = @(Get-ZTVPParsedTimelineEvidence -Rows $mdeTamperTimelineEvents)
             $mdeAlertEvidence = @(Invoke-ZTVPMdeAdvancedHunting -Query $queryAlertEvidence -Token $token)
             $mdeRegistryEvents = @(Invoke-ZTVPMdeAdvancedHunting -Query $queryRegistry -Token $token)
-            $mdeAlerts = @(Invoke-ZTVPMdeAdvancedHunting -Query $queryAlerts -Token $token)
-            $mdeJoinedAlertEvidence = @(Invoke-ZTVPMdeAdvancedHunting -Query $queryJoinedAlerts -Token $token)
+            $mdeAlerts = @(Invoke-ZTVPMdeAdvancedHunting -Query $queryAlerts -Token $token | Where-Object { Test-ZTVPDevDv008AlertRow -Row $_ })
+            $mdeJoinedAlertEvidence = @(Invoke-ZTVPMdeAdvancedHunting -Query $queryJoinedAlerts -Token $token | Where-Object { Test-ZTVPDevDv008AlertRow -Row $_ })
 
             $linkedAlertIds = @($mdeAlertEvidence | ForEach-Object { [string]$_.AlertId } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
-            $linkedAlerts = @($mdeAlerts | Where-Object { $linkedAlertIds -contains [string]$_.AlertId })
+            $linkedAlerts = @($mdeAlerts | Where-Object { $linkedAlertIds -contains [string]$_.AlertId -and (Test-ZTVPDevDv008AlertRow -Row $_) })
             if ($linkedAlertIds.Count -gt 0) {
                 $mdeAlerts = @($linkedAlerts)
             }
             else {
                 $mdeAlerts = @()
             }
-            $strongAlertEvidenceThisPoll = (@($mdeAlertEvidence | Where-Object { [string]$_.DetectionSource -match "EDR|Antivirus" }).Count -gt 0)
+            $strongAlertEvidenceThisPoll = (@($mdeAlertEvidence | Where-Object { [string]$_.DetectionSource -match "EDR" }).Count -gt 0)
             $alertEvidenceFoundThisPoll = (($mdeJoinedAlertEvidence.Count -gt 0) -or $strongAlertEvidenceThisPoll)
             $mdeCount = $mdeTamperTimelineEvents.Count + $mdeJoinedAlertEvidence.Count + $mdeRegistryEvents.Count + $mdeAlerts.Count
 
@@ -493,11 +521,15 @@ $alertTitle = Get-ZTVPFirstValue -Rows $alertRows -Names @("Title")
 $alertCategory = Get-ZTVPFirstValue -Rows $alertRows -Names @("Category")
 $alertServiceSource = Get-ZTVPFirstValue -Rows $alertRows -Names @("ServiceSource")
 $alertDetectionSource = Get-ZTVPFirstValue -Rows @($mdeJoinedAlertEvidence + $mdeAlertEvidence + $mdeAlerts) -Names @("AlertDetectionSource", "EvidenceDetectionSource", "DetectionSource")
-$tenantAlertEvidenceFound = $alertDeviceEvidenceFound -and (
+$invalidDevDv008Alert = (
+    "$alertTitle $alertCategory" -match "EICAR|EICAR_Test_File|Virus:DOS/EICAR|malware was prevented" -or
+    ($alertCategory -match "^Malware$" -and $alertTitle -match "EICAR|malware")
+)
+$tenantAlertEvidenceFound = (-not $invalidDevDv008Alert) -and $alertDeviceEvidenceFound -and (
     $alertTitle -match "tamper|Microsoft Defender Antivirus tampering|Defender Antivirus tampering|Antivirus tampering|Defender tampering" -or
     $alertCategory -match "DefenseEvasion|Defense Evasion" -or
     $alertDetectionSource -match "EDR" -or
-    $alertServiceSource -match "Microsoft Defender for Endpoint"
+    ("$alertTitle $alertCategory $alertDetectionSource $alertServiceSource" -match "T1562\.001|Disable or Modify Tools|Set-MpPreference|DisableRealtimeMonitoring|DisableBehaviorMonitoring|DisableIOAVProtection|DisableBlockAtFirstSeen")
 )
 $mdeEvidenceFound = ($mdeStatus -eq "Found") -and ($tenantTimelineEvidenceFound -or $tenantAlertEvidenceFound)
 $blockedResult = Get-ZTVPFirstValue -Rows $parsedTamperTimelineEvidence -Names @("Status")

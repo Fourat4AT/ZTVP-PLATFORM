@@ -89,6 +89,7 @@ function Test-ZTVPNotFound {
 
 $ctx = Ensure-ZTVPGraphConnection -Scopes $RequiredScopes
 
+$startedUtc = (Get-Date).ToUniversalTime().ToString("s") + "Z"
 $runId = Get-Date -Format "yyyyMMdd-HHmmss"
 $reportRoot = Join-Path (Get-Location) "powershell\Reports\Dynamic"
 $scenarioDir = Join-Path $reportRoot "CLD-C-001"
@@ -124,7 +125,7 @@ $cleanupErrors = @()
 
 Write-Host ""
 Write-Host "========================================="
-Write-Host "ZTVP CLD-C-001 - SharePoint Anonymous Sharing Link Exposure Validation"
+Write-Host "ZTVP APP-DV-008 - SharePoint Anonymous Sharing Link Exposure Validation"
 Write-Host "========================================="
 Write-Host ""
 Write-Host "Site mode: $SiteMode"
@@ -176,7 +177,8 @@ try {
     $fileId = [string](Get-ZTVPValue -Object $file -Name "id")
 
     $state = [PSCustomObject]@{
-        scenario_id = "CLD-C-001"
+        scenario_id = "APP-DV-008"
+        display_id = "APP-DV-008"
         run_id = $runId
         tenant_id = $ctx.TenantId
         connected_account = $ctx.Account
@@ -240,7 +242,7 @@ try {
     catch {
         $linkErrorMessage = $_.Exception.Message
 
-        if ($linkErrorMessage -match "anonymous|sharing|not allowed|disabled|policy|external|link type|organization|tenant|Anyone") {
+        if ($linkErrorMessage -match "Forbidden|AccessDenied|access denied|denied|anonymous|sharing|not allowed|disabled|policy|external|link type|organization|tenant|Anyone") {
             $linkDenied = $true
             $linkErrorCategory = "DeniedBySharingPolicyOrTenantConfiguration"
         }
@@ -313,23 +315,30 @@ $warnings = @()
 if ($linkCreated) {
     $status = "FAIL_ANONYMOUS_SHARING_LINK_ALLOWED"
     $risk = "HIGH"
-    $summary = "The tenant allowed creation of an anonymous SharePoint sharing link for a controlled dummy file."
-    $finalClaim = "Anonymous sharing link creation succeeded. This indicates potential cloud app data exposure if applied to real content."
+    $summary = "FAIL - Anonymous sharing link allowed."
+    $finalClaim = "SharePoint allowed creation of an anonymous/public link for the controlled dummy file. This means public sharing is currently allowed and could expose business content if applied to real files."
     $evidenceQuality = "Strong - Microsoft Graph createLink returned an anonymous permission."
 }
 elseif ($linkDenied) {
     $status = "PASS_ANONYMOUS_SHARING_LINK_BLOCKED"
     $risk = "LOW"
-    $summary = "The tenant denied anonymous SharePoint sharing link creation for the controlled dummy file."
-    $finalClaim = "Anonymous sharing link creation was blocked or denied by tenant or site sharing configuration."
+    $summary = "PASS - Anonymous sharing link blocked."
+    $finalClaim = "SharePoint denied creation of an anonymous/public sharing link for the controlled dummy file. This means the tenant or site sharing configuration prevented public link exposure."
     $evidenceQuality = "Strong - Microsoft Graph createLink did not issue an anonymous link and returned a sharing-policy-style denial."
 }
 elseif ($fileCreated -and -not $linkCreated) {
     $status = "PARTIAL_ANONYMOUS_LINK_NOT_CREATED"
     $risk = "MEDIUM"
-    $summary = "The anonymous link was not created, but ZTVP could not confidently classify the denial as tenant sharing policy enforcement."
+    $summary = "PARTIAL - Anonymous link was not created, but the denial reason is unclear."
     $finalClaim = "No anonymous link was created. Review the createLink error to determine whether this was policy enforcement or an API/permission limitation."
     $evidenceQuality = "Partial - createLink failed with an unclassified error."
+}
+elseif ($operationError -and -not $fileCreated) {
+    $status = "ERROR_TEST_SETUP_FAILED"
+    $risk = "UNKNOWN"
+    $summary = "ERROR - SharePoint anonymous sharing validation could not reach createLink."
+    $finalClaim = "ZTVP could not complete the setup needed to test anonymous createLink. Review authentication, site, drive, and file creation evidence."
+    $evidenceQuality = "Error - the scenario failed before the anonymous link creation control point."
 }
 
 if ($operationError) {
@@ -345,11 +354,13 @@ if ($cleanupStatus -ne "Completed") {
 }
 
 $result = [PSCustomObject]@{
-    scenario_id = "CLD-C-001"
-    display_id = "CLD-DV-001"
+    scenario_id = "APP-DV-008"
+    display_id = "APP-DV-008"
     scenario_name = "SharePoint Anonymous Sharing Link Exposure Validation"
     pillar = "Applications"
     scope = "Cloud"
+    started_utc = $startedUtc
+    completed_utc = (Get-Date).ToUniversalTime().ToString("s") + "Z"
     generated_at = (Get-Date).ToString("s")
     tenant_id = $ctx.TenantId
     connected_account = $ctx.Account
@@ -417,13 +428,32 @@ $result = [PSCustomObject]@{
         warning_count = $warnings.Count
     }
 
-    recommendations = @(
-        "Keep anonymous sharing disabled unless there is a documented business exception.",
-        "Use organization-only or specific-people links for controlled collaboration.",
-        "Monitor SharePoint sharing events and external sharing reports.",
-        "Review SharePoint tenant sharing settings and site-level sharing settings.",
-        "If anonymous sharing is required, restrict it to dedicated low-risk sites and monitor link creation."
-    )
+    recommendations = if ($status -eq "PASS_ANONYMOUS_SHARING_LINK_BLOCKED") {
+        @(
+            "Keep anonymous/Anyone sharing disabled unless there is a documented business exception.",
+            "Continue using organization-only or specific-people links for normal collaboration.",
+            "Periodically rerun APP-DV-008 after sharing setting changes.",
+            "Monitor SharePoint sharing audit events."
+        )
+    }
+    elseif ($status -eq "FAIL_ANONYMOUS_SHARING_LINK_ALLOWED") {
+        @(
+            "Go to SharePoint admin center -> Policies -> Sharing.",
+            "Disable Anyone/anonymous links at tenant level.",
+            "Review SharePoint admin center -> Sites -> Active sites -> tested site -> Sharing.",
+            "Set the site to New and existing guests, Existing guests only, or Only people in your organization.",
+            "Rerun APP-DV-008 after settings propagate.",
+            "Monitor SharingLinkCreated / anonymous link activity."
+        )
+    }
+    else {
+        @(
+            "Review the createLink error details.",
+            "Verify Graph and SharePoint permissions.",
+            "Confirm tenant and site sharing settings manually.",
+            "Rerun after a few minutes."
+        )
+    }
 
     limitations = @(
         "This validation uses a controlled dummy file and does not test every SharePoint site.",
@@ -436,7 +466,7 @@ Write-ZTVPJson -Path $reportPath -Object $result
 
 Write-Host ""
 Write-Host "========================================="
-Write-Host "CLD-C-001 COMPLETED"
+Write-Host "APP-DV-008 COMPLETED"
 Write-Host "========================================="
 Write-Host ""
 Write-Host "Status: $status"

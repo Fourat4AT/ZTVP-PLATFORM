@@ -23,7 +23,8 @@ from dynamic_devdv006 import (
     connect_defender_xdr_api,
 )
 from background_jobs import get_active_run, start_scenario_job
-from run_state import latest_run_for_scenario
+from html_report import write_standard_html_report
+from run_state import latest_run_for_scenario, selected_run_for_scenario
 
 
 STATUS_LABELS = {
@@ -150,6 +151,8 @@ def _evidence_debug_message(reason: str, current_run_id: str, evidence_run_id: s
 
 
 def _render_report(report: dict, report_path: Path, html_path: Path, key_prefix: str = "devdv008") -> None:
+    write_standard_html_report(report, html_path)
+
     status = report.get("status")
     tone = _tone(status)
     evidence = report.get("evidence") or {}
@@ -533,7 +536,7 @@ def render_devdv008_runner(project_root: Path) -> None:
     local_evidence_path = scenario_dir / "devdv008-local-evidence.json"
     defender_token_cache_path = project_root / "powershell" / "Auth" / "ztvp-defenderxdr-token-cache.json"
     report_path = project_root / "powershell" / "Reports" / "Dynamic" / "DEV-DV-008-result.json"
-    html_path = project_root / "powershell" / "Reports" / "Dynamic" / "Html" / "DEV-DV-008-result.html"
+    html_path = project_root / "powershell" / "Reports" / "Dynamic" / "DEV-DV-008-result.html"
 
     existing_state = _load_json(state_path) if state_path.exists() else {}
     tenant_ctx = _tenant_context(project_root, existing_state)
@@ -799,7 +802,12 @@ DeviceEvents
                 st.write(connection.get("error_description", "Microsoft sign-in or Advanced Hunting validation failed."))
         _render_defender_xdr_connect_command(tenant_ctx["tenant_id"], tenant_ctx["client_id"])
 
-    current_run = get_active_run(project_root, "DEV-DV-008") or latest_run_for_scenario(project_root, "DEV-DV-008")
+    requested_run_id = str(st.session_state.get("ztvp_dynamic_open_run_id") or "")
+    current_run = (
+        get_active_run(project_root, "DEV-DV-008", requested_run_id)
+        or selected_run_for_scenario(project_root, "DEV-DV-008", requested_run_id)
+        or latest_run_for_scenario(project_root, "DEV-DV-008")
+    )
     if current_run:
         _render_active_run_summary(current_run, "DEV-DV-008")
         if st.button("Open Active Runs", use_container_width=True, key="devdv008_open_active_runs"):
@@ -818,7 +826,7 @@ DeviceEvents
             if str(run.get("status") or "").lower() in {"queued", "running", "polling"} and int(run.get("poll_attempts") or 0) > 0:
                 _alert("An existing scenario run is already active. ZTVP will keep polling in the background and update Active Runs.", "info")
             else:
-                _alert("Scenario run started. You can leave this page. ZTVP will keep polling in the background and update Active Runs.", "good")
+                _alert("Analysis started. You can leave this page and monitor it in Active Runs.", "good")
             st.caption(f"Run ID: {run.get('run_id')}")
             if st.button("Open Active Runs", use_container_width=True, key="devdv008_open_active_runs_after_start"):
                 _open_active_runs()

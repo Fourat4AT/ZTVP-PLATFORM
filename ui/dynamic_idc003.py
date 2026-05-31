@@ -456,7 +456,7 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
         st.download_button(
             "Download JSON Report",
             data=report_path.read_bytes(),
-            file_name="ID-C-003-result.json",
+            file_name="ID-DV-003-result.json",
             mime="application/json",
             use_container_width=True,
         )
@@ -465,7 +465,7 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
         st.download_button(
             "Download HTML Report",
             data=html_path.read_bytes(),
-            file_name="ID-C-003-result.html",
+            file_name="ID-DV-003-result.html",
             mime="text/html",
             use_container_width=True,
         )
@@ -484,7 +484,7 @@ def render_idc003_runner(project_root: Path) -> None:
     st.markdown(
         """
 <div class="ztvp-hero">
-    <h2>ID-C-003 — Controlled Legacy Authentication Exposure Validation</h2>
+    <h2>ID-DV-003 — Controlled Legacy Authentication Exposure Validation</h2>
     <p>This creates a licensed Exchange decoy mailbox and tests whether old username/password mail protocols can authenticate.</p>
 </div>
 """,
@@ -521,24 +521,24 @@ def render_idc003_runner(project_root: Path) -> None:
         st.markdown("**Exact decoy user for this run**")
         st.markdown(f'<div class="ztvp-codebox">{_safe(decoy.get("user_principal_name", ""))}</div>', unsafe_allow_html=True)
 
-        with st.expander("View active ID-C-003 state"):
+        with st.expander("View active ID-DV-003 state"):
             st.json(state)
     else:
-        _alert("No active ID-C-003 decoy exists. Generate a fresh licensed decoy to start the test.", "info")
+        _alert("No active ID-DV-003 decoy exists. Generate a fresh licensed decoy to start the test.", "info")
 
         with st.container(border=True):
             _alert("ZTVP will create a temporary test user with an Exchange mailbox. You can usually leave these values unchanged.", "info")
             _field_note("Start of the temporary user's email/sign-in name. Leave the default unless you want a different test-user name.")
             prefix = st.text_input("Temporary user email prefix", value="ztvp-idc003-legacyauth", key="idc003_prefix")
             _field_note("Name shown for the temporary user in Entra. This does not change the test.")
-            display = st.text_input("Temporary user display name", value="ZTVP ID-C-003 Legacy Auth Decoy User", key="idc003_display")
+            display = st.text_input("Temporary user display name", value="ZTVP ID-DV-003 Legacy Auth Decoy User", key="idc003_display")
             _field_note("Country code Microsoft requires before assigning a license. Keep TN for Tunisia. Use US for United States.")
             usage = st.text_input("Country code", value="TN", max_chars=2, key="idc003_usage")
 
             if st.button("Generate Temporary Mailbox User", type="primary", use_container_width=True):
                 args = [
                     "-DecoyAliasPrefix", prefix.strip() or "ztvp-idc003-legacyauth",
-                    "-DisplayName", display.strip() or "ZTVP ID-C-003 Legacy Auth Decoy User",
+                    "-DisplayName", display.strip() or "ZTVP ID-DV-003 Legacy Auth Decoy User",
                     "-UsageLocation", usage.strip().upper() or "TN",
                 ]
 
@@ -642,7 +642,7 @@ Password: {_safe(st.session_state.get("idc003_temp_password"))}
                 html_path = project_root / "powershell" / "Reports" / "Dynamic" / "Html" / "ID-C-003-result.html"
 
                 if completed.returncode != 0:
-                    _alert("ID-C-003 failed.", "bad")
+                    _alert("ID-DV-003 failed.", "bad")
                     st.code(completed.stderr or completed.stdout, language="text")
                     return
 
@@ -663,7 +663,7 @@ Password: {_safe(st.session_state.get("idc003_temp_password"))}
     has_active = bool(decoy.get("id")) and cleanup.get("status", "Pending") != "Completed"
 
     if not has_active:
-        _alert("No active ID-C-003 decoy exists.", "info")
+        _alert("No active ID-DV-003 decoy exists.", "info")
         return
 
     with st.container(border=True):
@@ -701,7 +701,7 @@ Removes the Exchange-capable license and local secret files, then leaves the dec
                 _alert("Cleanup failed.", "bad")
                 st.code(completed.stderr or completed.stdout, language="text")
             else:
-                _alert("ID-C-003 cleanup completed.", "good")
+                _alert("ID-DV-003 cleanup completed.", "good")
                 st.code(completed.stdout, language="text")
 
                 for key in ["idc003_temp_upn", "idc003_temp_password"]:

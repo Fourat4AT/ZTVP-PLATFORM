@@ -12,6 +12,8 @@ import pandas as pd
 import requests
 import streamlit as st
 
+from html_report import write_standard_html_report
+
 
 STATUS_LABELS = {
     "DECOY_READY": "DECOY READY",
@@ -140,13 +142,7 @@ def _metric(label: str, value: object, tone: str = "") -> str:
 
 
 def _write_html_report(report: dict, html_path: Path) -> None:
-    html_path.parent.mkdir(parents=True, exist_ok=True)
-    html_path.write_text(
-        "<html><body><h1>APP-DV-007 Report</h1><pre>"
-        + _safe(json.dumps(report, indent=2))
-        + "</pre></body></html>",
-        encoding="utf-8",
-    )
+    write_standard_html_report(report, html_path)
 
 
 def _graph_get_me(access_token: str) -> dict:
@@ -539,7 +535,7 @@ def render_appdv007_runner(project_root: Path) -> None:
     state_path = scenario_dir / "appdv007-state.json"
     prepare_path = scenario_dir / "appdv007-prepare-result.json"
     report_path = project_root / "powershell" / "Reports" / "Dynamic" / "APP-DV-007-result.json"
-    html_path = project_root / "powershell" / "Reports" / "Dynamic" / "Html" / "APP-DV-007-result.html"
+    html_path = project_root / "powershell" / "Reports" / "Dynamic" / "APP-DV-007-result.html"
 
     st.markdown(
         """

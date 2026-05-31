@@ -8,8 +8,47 @@ from pathlib import Path
 from typing import Any
 
 
-ACTIVE_STATUSES = {"queued", "running", "polling"}
-FINAL_STATUSES = {"completed", "error", "cancelled", "stopped"}
+ACTIVE_STATUSES = {"armed", "script_generated", "local_evidence_imported", "running", "polling"}
+FINAL_STATUSES = {"completed", "timeout", "error", "cancelled", "stale"}
+ALLOWED_VERDICTS = {"PASS", "PARTIAL", "FAIL", "NOT_RUN", "ERROR", "CANCELLED", "UNSUPPORTED", None}
+
+
+SCENARIO_ROUTE_ALIASES = {
+    "APP-C-002": "APP-DV-002",
+    "APP-C-003": "APP-DV-003",
+    "CLD-C-001": "APP-DV-008",
+    "CLD-DV-001": "APP-DV-008",
+    "ID-C-001": "ID-DV-001",
+    "ID-C-002": "ID-DV-002",
+    "ID-C-003": "ID-DV-003",
+    "ID-C-004": "ID-DV-004",
+    "ID-C-005": "ID-DV-005",
+}
+
+
+SCENARIO_ROUTE_MAP = {
+    "DEV-DV-001": {"pillar": "Devices", "scope": "Cloud", "scenario_id": "DEV-DV-001"},
+    "DEV-DV-004": {"pillar": "Devices", "scope": "Cloud", "scenario_id": "DEV-DV-004"},
+    "DEV-DV-006": {"pillar": "Devices", "scope": "Cloud", "scenario_id": "DEV-DV-006"},
+    "DEV-DV-008": {"pillar": "Devices", "scope": "Cloud", "scenario_id": "DEV-DV-008"},
+    "APP-DV-002": {"pillar": "Applications", "scope": "Cloud", "scenario_id": "APP-DV-002"},
+    "APP-DV-003": {"pillar": "Applications", "scope": "Cloud", "scenario_id": "APP-DV-003"},
+    "APP-DV-004": {"pillar": "Applications", "scope": "Cloud", "scenario_id": "APP-DV-004"},
+    "APP-DV-007": {"pillar": "Applications", "scope": "Cloud", "scenario_id": "APP-DV-007"},
+    "APP-DV-008": {"pillar": "Applications", "scope": "Cloud", "scenario_id": "APP-DV-008"},
+    "ID-DV-001": {"pillar": "Identity", "scope": "Cloud", "scenario_id": "ID-DV-001"},
+    "ID-DV-002": {"pillar": "Identity", "scope": "Cloud", "scenario_id": "ID-DV-002"},
+    "ID-DV-003": {"pillar": "Identity", "scope": "Cloud", "scenario_id": "ID-DV-003"},
+    "ID-DV-004": {"pillar": "Identity", "scope": "Cloud", "scenario_id": "ID-DV-004"},
+    "ID-DV-005": {"pillar": "Identity", "scope": "Cloud", "scenario_id": "ID-DV-005"},
+    "ID-DV-006": {"pillar": "Identity", "scope": "Cloud", "scenario_id": "ID-DV-006"},
+    "ID-DV-007": {"pillar": "Identity", "scope": "Cloud", "scenario_id": "ID-DV-007"},
+    "ID-DV-008": {"pillar": "Identity", "scope": "Cloud", "scenario_id": "ID-DV-008"},
+    "ID-DV-009": {"pillar": "Identity", "scope": "Cloud", "scenario_id": "ID-DV-009"},
+    "ID-DV-010": {"pillar": "Identity", "scope": "Cloud", "scenario_id": "ID-DV-010"},
+    "ID-DV-011": {"pillar": "Identity", "scope": "Cloud", "scenario_id": "ID-DV-011"},
+    "ID-DV-012": {"pillar": "Identity", "scope": "Cloud", "scenario_id": "ID-DV-012"},
+}
 
 
 def utc_now() -> str:
@@ -33,9 +72,116 @@ def read_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8-sig"))
+        return normalize_run_state(json.loads(path.read_text(encoding="utf-8-sig")))
     except Exception:
         return {}
+
+
+def is_result_json_path(path: Path) -> bool:
+    name = path.name.lower()
+    return name.endswith("-result.json") or name.endswith("result.json") or name.endswith("report.json")
+
+
+def is_run_state_payload(payload: dict[str, Any]) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    required = ["run_id", "scenario_id", "status"]
+    if not all(payload.get(key) not in [None, ""] for key in required):
+        return False
+    if "report_path" in payload or "poll_attempts" in payload or "progress_percent" in payload or "current_message" in payload:
+        return True
+    # Scenario reports also have run_id/scenario_id/status, but they do not carry Active Runs state fields.
+    return False
+
+
+def verdict_from_result_code(value: object) -> str | None:
+    text = str(value or "").upper()
+    if text.startswith("PASS"):
+        return "PASS"
+    if text.startswith("PARTIAL"):
+        return "PARTIAL"
+    if text.startswith("FAIL"):
+        return "FAIL"
+    if text.startswith("NOT_RUN"):
+        return "NOT_RUN"
+    if text.startswith("ERROR"):
+        return "ERROR"
+    if text.startswith("CANCEL"):
+        return "CANCELLED"
+    if text.startswith("UNSUPPORTED"):
+        return "UNSUPPORTED"
+    return None
+
+
+def _invalid_path_value(value: object) -> bool:
+    if value is None:
+        return True
+    text = str(value).strip()
+    return text in {"", ".", "None", "none", "null", "NULL"}
+
+
+def normalize_run_state(state: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(state, dict):
+        return {}
+    normalized = dict(state)
+    status_text = str(normalized.get("status") or "").strip()
+    status_lower = status_text.lower()
+    verdict = normalized.get("verdict")
+    result_code = normalized.get("result_code")
+
+    if status_text.upper().startswith(("PASS", "PARTIAL", "FAIL", "NOT_RUN")):
+        normalized["result_code"] = result_code or status_text
+        normalized["status"] = "completed"
+        normalized["verdict"] = verdict or verdict_from_result_code(status_text)
+    elif status_lower in {"queued"}:
+        normalized["status"] = "polling"
+    elif status_lower in {"stopped"}:
+        normalized["status"] = "stale"
+    elif status_lower in ACTIVE_STATUSES or status_lower in FINAL_STATUSES:
+        normalized["status"] = status_lower
+    elif status_text:
+        normalized["status"] = status_lower
+    else:
+        normalized["status"] = "stale"
+
+    if normalized.get("status") == "error" and not normalized.get("verdict"):
+        normalized["verdict"] = "ERROR"
+    if normalized.get("status") == "cancelled":
+        normalized["verdict"] = "CANCELLED"
+    if normalized.get("verdict") not in ALLOWED_VERDICTS:
+        normalized["verdict"] = verdict_from_result_code(normalized.get("verdict"))
+    if normalized.get("status") == "completed" and normalized.get("verdict"):
+        try:
+            normalized["progress_percent"] = max(100, int(normalized.get("progress_percent") or 0))
+        except Exception:
+            normalized["progress_percent"] = 100
+    if not normalized.get("report_path") and normalized.get("report_json_path"):
+        normalized["report_path"] = normalized.get("report_json_path")
+    if not normalized.get("report_json_path") and normalized.get("report_path"):
+        normalized["report_json_path"] = normalized.get("report_path")
+    if not normalized.get("html_report_path") and normalized.get("report_html_path"):
+        normalized["html_report_path"] = normalized.get("report_html_path")
+    if not normalized.get("report_html_path") and normalized.get("html_report_path"):
+        normalized["report_html_path"] = normalized.get("html_report_path")
+    if not normalized.get("final_summary") and normalized.get("current_message"):
+        normalized["final_summary"] = normalized.get("current_message")
+    if not normalized.get("monitoring_window_minutes") and normalized.get("wait_minutes") is not None:
+        normalized["monitoring_window_minutes"] = normalized.get("wait_minutes")
+    if not normalized.get("retry_interval_seconds") and normalized.get("poll_seconds") is not None:
+        normalized["retry_interval_seconds"] = normalized.get("poll_seconds")
+
+    for path_key in ("report_path", "report_json_path", "html_report_path", "report_html_path", "details_path"):
+        raw_path = normalized.get(path_key)
+        if _invalid_path_value(raw_path):
+            normalized[path_key] = None
+            continue
+        try:
+            path = Path(str(raw_path))
+            if path.exists() and not path.is_file():
+                normalized[path_key] = None
+        except Exception:
+            normalized[path_key] = None
+    return normalized
 
 
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -50,6 +196,7 @@ def load_run(project_root: Path | str, run_id: str) -> dict[str, Any]:
 
 
 def save_run(project_root: Path | str, state: dict[str, Any]) -> None:
+    state = normalize_run_state(state)
     state["last_updated_utc"] = utc_now()
     atomic_write_json(run_state_path(project_root, str(state["run_id"])), state)
 
@@ -69,8 +216,11 @@ def list_runs(project_root: Path | str) -> list[dict[str, Any]]:
         return []
     runs = []
     for path in folder.glob("*.json"):
-        state = read_json(path)
-        if state:
+        if is_result_json_path(path):
+            continue
+        raw_state = read_json(path)
+        if raw_state and is_run_state_payload(raw_state):
+            state = normalize_run_state(raw_state)
             state["_path"] = str(path)
             runs.append(state)
     return sorted(runs, key=lambda item: str(item.get("started_utc") or ""), reverse=True)
@@ -88,6 +238,33 @@ def find_runs(project_root: Path | str, scenario_id: str | None = None, statuses
 def latest_run_for_scenario(project_root: Path | str, scenario_id: str) -> dict[str, Any] | None:
     matches = find_runs(project_root, scenario_id=scenario_id)
     return matches[0] if matches else None
+
+
+def selected_run_for_scenario(project_root: Path | str, scenario_id: str, run_id: str | None = None) -> dict[str, Any] | None:
+    requested = str(run_id or "").strip()
+    aliases = {
+        "APP-DV-003": {"APP-DV-003", "APP-C-003"},
+        "APP-C-003": {"APP-DV-003", "APP-C-003"},
+        "APP-DV-002": {"APP-DV-002", "APP-C-002"},
+        "APP-C-002": {"APP-DV-002", "APP-C-002"},
+        "APP-DV-008": {"APP-DV-008", "CLD-DV-001", "CLD-C-001"},
+        "CLD-DV-001": {"APP-DV-008", "CLD-DV-001", "CLD-C-001"},
+        "CLD-C-001": {"APP-DV-008", "CLD-DV-001", "CLD-C-001"},
+        "ID-DV-001": {"ID-DV-001", "ID-C-001"},
+        "ID-C-001": {"ID-DV-001", "ID-C-001"},
+        "ID-DV-005": {"ID-DV-005", "ID-C-005"},
+        "ID-C-005": {"ID-DV-005", "ID-C-005"},
+    }
+    wanted = aliases.get(str(scenario_id or "").upper(), {str(scenario_id or "").upper()})
+    if requested:
+        run = load_run(project_root, requested)
+        if run and str(run.get("scenario_id") or "").upper() in wanted:
+            return run
+    for candidate in wanted:
+        run = latest_run_for_scenario(project_root, candidate)
+        if run:
+            return run
+    return None
 
 
 def request_cancel(project_root: Path | str, run_id: str) -> dict[str, Any]:
@@ -109,6 +286,8 @@ def remove_run(project_root: Path | str, run_id: str) -> bool:
 
 def is_stale(state: dict[str, Any]) -> bool:
     status = str(state.get("status") or "").lower()
+    if status == "stale":
+        return True
     if status not in ACTIVE_STATUSES:
         return False
     last_updated = str(state.get("last_updated_utc") or state.get("started_utc") or "")
@@ -123,7 +302,48 @@ def is_stale(state: dict[str, Any]) -> bool:
 
 
 def scenario_nav_key(scenario_id: str) -> str:
-    return {
-        "DEV-DV-006": "Devices|Cloud|DEV-DV-006|DEV-DV-006|Defender EICAR Detection Validation",
-        "DEV-DV-008": "Devices|Cloud|DEV-DV-008|DEV-DV-008|Hybrid Tamper Protection Validation",
-    }.get(str(scenario_id).upper(), "")
+    route = scenario_route(scenario_id)
+    if not route:
+        return ""
+    sid = route["scenario_id"]
+    runtime_id = {
+        "APP-DV-002": "APP-C-002",
+        "APP-DV-003": "APP-C-003",
+        "APP-DV-008": "CLD-C-001",
+        "ID-DV-001": "ID-C-001",
+        "ID-DV-002": "ID-C-002",
+        "ID-DV-003": "ID-C-003",
+        "ID-DV-004": "ID-C-004",
+        "ID-DV-005": "ID-C-005",
+    }.get(sid, sid)
+    names = {
+        "DEV-DV-001": "Unmanaged Device Cloud Access Probe",
+        "DEV-DV-004": "Sandbox Device Registration Abuse Probe",
+        "DEV-DV-006": "Defender EICAR Detection Validation",
+        "DEV-DV-008": "Hybrid Tamper Protection Validation",
+        "APP-DV-002": "Exchange External Mail Forwarding Exposure Validation",
+        "APP-DV-003": "MDCA Public File Sharing Detection Validation",
+        "APP-DV-004": "Sensitive App Access From Unmanaged Device Probe",
+        "APP-DV-007": "App Registration Permission Probe",
+        "APP-DV-008": "SharePoint Anonymous Sharing Link Exposure Validation",
+        "ID-DV-001": "Privileged Access MFA Enforcement Validation",
+        "ID-DV-002": "Device Code Flow Block Validation",
+        "ID-DV-003": "Controlled Legacy Authentication Exposure Validation",
+        "ID-DV-004": "OAuth App Consent Exposure Validation",
+        "ID-DV-005": "External Guest Admin Portal Block Validation",
+        "ID-DV-006": "User Consent Enforcement Probe",
+        "ID-DV-007": "App Registration Permission Probe",
+        "ID-DV-008": "Risk-Based Access Enforcement Probe",
+        "ID-DV-009": "PIM Role Activation Enforcement Probe",
+        "ID-DV-010": "Break-Glass Monitoring Probe",
+        "ID-DV-011": "Disabled Synced Account Cloud Access Probe",
+        "ID-DV-012": "MDI Suspicious Identity Activity Probe",
+    }
+    return f"{route['pillar']}|{route['scope']}|{sid}|{runtime_id}|{names.get(sid, sid)}"
+
+
+def scenario_route(scenario_id: str) -> dict[str, str] | None:
+    sid = str(scenario_id or "").upper().strip()
+    sid = SCENARIO_ROUTE_ALIASES.get(sid, sid)
+    route = SCENARIO_ROUTE_MAP.get(sid)
+    return dict(route) if route else None

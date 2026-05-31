@@ -48,6 +48,12 @@ except Exception:
     render_appc003_runner = None
 
 
+try:
+    from dynamic_appdv004 import render_appdv004_runner
+except Exception:
+    render_appdv004_runner = None
+
+
 
 try:
     from dynamic_appdv007 import render_appdv007_runner
@@ -150,6 +156,20 @@ BUILTINS = {
         "evidence": "SharePoint site/drive/file evidence, anonymous createLink result, MDCA alert API evidence, remediation evidence, cleanup record, JSON and HTML report.",
         "expected": "The controlled public file exposure should be detected by MDCA policy and/or remediated by governance action.",
     },
+    "APP-DV-004": {
+        "display_id": "APP-DV-004",
+        "scenario_id": "APP-DV-004",
+        "name": "Sensitive App Access From Unmanaged Device Probe",
+        "pillar": "Applications",
+        "scope": "Cloud",
+        "severity": "High",
+        "support": "SUPPORTED",
+        "goal": "Validate that a selected sensitive application cannot be accessed from a non-compliant or unmanaged endpoint.",
+        "decoy": "Controlled test user and Windows Sandbox or another unmanaged/non-compliant endpoint.",
+        "action": "Manually access the target cloud app from the unmanaged endpoint, then poll Entra sign-in logs for Conditional Access evidence.",
+        "evidence": "Microsoft Graph signIns, Conditional Access result, applied policies, device compliance/management context, JSON and HTML report.",
+        "expected": "Conditional Access blocks access because the device is not compliant or unmanaged.",
+    },
     "APP-C-002": {
         "display_id": "APP-DV-002",
         "scenario_id": "APP-C-002",
@@ -165,7 +185,7 @@ BUILTINS = {
         "expected": "External automatic forwarding and redirect configuration should be blocked or rejected.",
     },
     "CLD-C-001": {
-        "display_id": "CLD-DV-001",
+        "display_id": "APP-DV-008",
         "scenario_id": "CLD-C-001",
         "name": "SharePoint Anonymous Sharing Link Exposure Validation",
         "pillar": "Applications",
@@ -272,8 +292,10 @@ ALIASES = {
     "APP-DV-007": "APP-DV-007",
     "APP-DV-003": "APP-C-003",
     "APP-C-003": "APP-C-003",
+    "APP-DV-004": "APP-DV-004",
     "APP-DV-002": "APP-C-002",
     "APP-C-002": "APP-C-002",
+    "APP-DV-008": "CLD-C-001",
     "CLD-DV-001": "CLD-C-001",
     "CLD-C-001": "CLD-C-001",
     "ID-DV-001": "ID-C-001",
@@ -286,6 +308,12 @@ ALIASES = {
     "ID-C-004": "ID-C-004",
     "ID-DV-005": "ID-C-005",
     "ID-C-005": "ID-C-005",
+}
+
+
+NAV_PILLARS = ["Applications", "Devices", "Identity"]
+PILLAR_LABELS = {
+    "Devices": "Endpoint",
 }
 
 
@@ -356,6 +384,9 @@ def _builtin_key(scenario: dict) -> str | None:
     if "app registration" in name or "application registration" in name:
         return "APP-DV-007"
 
+    if "sensitive app access" in name or ("unmanaged" in name and "sensitive" in name):
+        return "APP-DV-004"
+
     if "tamper" in name and "defender" in name:
         return "DEV-DV-008"
 
@@ -401,11 +432,24 @@ def _scenario_name(scenario: dict) -> str:
     return _first(scenario, ["name", "Name", "title", "Title"], _scenario_id(scenario))
 
 
-def _pillar(scenario: dict) -> str:
+def _normalize_pillar(pillar: str) -> str:
+    pillar = pillar.strip()
+    if pillar == "Endpoint":
+        return "Devices"
+    return pillar
+
+
+def _raw_pillar(scenario: dict) -> str:
     return _meta(scenario).get("pillar") or _first(scenario, ["pillar", "Pillar"], "Identity")
 
 
+def _pillar(scenario: dict) -> str:
+    return _normalize_pillar(_raw_pillar(scenario))
+
+
 def _scope(scenario: dict) -> str:
+    if _raw_pillar(scenario) == "Endpoint" or any(value.startswith("EP-DV-") for value in _ids(scenario)):
+        return "Cloud"
     return _meta(scenario).get("scope") or _first(scenario, ["scope", "Scope"], "Cloud")
 
 
@@ -473,6 +517,10 @@ def _is_appdv007(scenario: dict) -> bool:
     return _builtin_key(scenario) == "APP-DV-007"
 
 
+def _is_appdv004(scenario: dict) -> bool:
+    return _builtin_key(scenario) == "APP-DV-004"
+
+
 def _ensure_builtin_dynamic_scenarios(scenarios: list[dict]) -> list[dict]:
     items = [item for item in list(scenarios or []) if isinstance(item, dict)]
     existing = {_builtin_key(item) for item in items}
@@ -495,7 +543,10 @@ def _ensure_builtin_dynamic_scenarios(scenarios: list[dict]) -> list[dict]:
 
 
 def _scenario_key(scenario: dict) -> str:
-    return "|".join([_pillar(scenario), _scope(scenario), _scenario_id(scenario), _display_id(scenario), _scenario_name(scenario)])
+    # Public navigation keys use the Dynamic Validation display ID first.
+    # Internal runner aliases such as ID-C-001/APP-C-003 stay in the fourth
+    # segment so existing scenario runners and state folders keep working.
+    return "|".join([_pillar(scenario), _scope(scenario), _display_id(scenario), _scenario_id(scenario), _scenario_name(scenario)])
 
 
 def _sort_key(scenario: dict) -> tuple[str, str]:
@@ -656,6 +707,10 @@ button[data-testid="stBaseButton-default"] {
     color: #0f172a !important;
     border: 1px solid #dbe5f3 !important;
     border-radius: 12px !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    height: 44px !important;
     min-height: 42px !important;
     font-weight: 850 !important;
     box-shadow: 0 6px 16px rgba(15,23,42,.06) !important;
@@ -672,6 +727,10 @@ button[data-testid="stBaseButton-primary"] {
     background: #2563eb !important;
     color: #ffffff !important;
     border: 1px solid #2563eb !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    height: 44px !important;
     box-shadow: 0 8px 20px rgba(37, 99, 235, 0.20) !important;
 }
 div.stButton > button[kind="primary"]:hover,
@@ -684,6 +743,42 @@ div.stButton > button p,
 button[data-testid="stBaseButton-secondary"] p,
 button[data-testid="stBaseButton-default"] p {
     color: inherit !important;
+}
+div[data-testid="stWidgetLabel"] label,
+div[data-testid="stWidgetLabel"] p,
+label,
+.stTextInput label,
+.stSelectbox label,
+.stNumberInput label,
+.stTextArea label {
+    color: #0f172a !important;
+    opacity: 1 !important;
+    font-weight: 750 !important;
+}
+div[data-testid="stCaptionContainer"],
+div[data-testid="stCaptionContainer"] p,
+.stCaption,
+small,
+div[data-baseweb="form-control"] div {
+    color: #64748b !important;
+}
+input,
+textarea,
+div[data-baseweb="select"] span {
+    color: #f8fafc !important;
+}
+input::placeholder,
+textarea::placeholder {
+    color: #94a3b8 !important;
+    opacity: 1 !important;
+}
+input:disabled,
+textarea:disabled,
+div[aria-disabled="true"],
+div[aria-disabled="true"] * {
+    color: #64748b !important;
+    -webkit-text-fill-color: #64748b !important;
+    opacity: 1 !important;
 }
 @media (max-width: 700px) {
     div[data-testid="stVerticalBlockBorderWrapper"]:has(.ztvp-scenario-card-marker) {
@@ -724,13 +819,17 @@ def _render_choice_buttons(values: list[str], state_key: str, reset_keys: list[s
         current = values[0]
         st.session_state[state_key] = current
 
-    cols = st.columns(max(1, min(len(values), 4)))
+    if state_key == "ztvp_dynamic_pillar":
+        cols = st.columns([1, 1, 1], gap="medium")
+    else:
+        cols = st.columns(max(1, min(len(values), 4)))
 
     for index, value in enumerate(values):
         with cols[index % len(cols)]:
             button_type = "primary" if value == current else "secondary"
+            label = PILLAR_LABELS.get(value, value) if state_key == "ztvp_dynamic_pillar" else value
 
-            if st.button(value, key=f"{state_key}_{value}", use_container_width=True, type=button_type):
+            if st.button(label, key=f"{state_key}_{value}", use_container_width=True, type=button_type):
                 st.session_state[state_key] = value
 
                 for key in reset_keys:
@@ -877,6 +976,10 @@ def _go_home() -> None:
     st.session_state.pop("ztvp_dynamic_pillar", None)
     st.session_state.pop("ztvp_dynamic_scope", None)
     st.session_state.pop("ztvp_dynamic_open_scenario", None)
+    st.session_state.pop("ztvp_dynamic_open_run_id", None)
+    st.session_state.pop("ztvp_dynamic_open_run_status", None)
+    st.session_state.pop("ztvp_dynamic_open_report_path", None)
+    st.session_state.pop("ztvp_dynamic_pending_scenario_id", None)
 
 
 def _render_open_scenario_navigation() -> None:
@@ -890,6 +993,19 @@ def _render_open_scenario_navigation() -> None:
     with catalog_col:
         if st.button("Scenario Catalog", key="ztvp_open_scenario_catalog", use_container_width=True):
             st.session_state.pop("ztvp_dynamic_open_scenario", None)
+            st.session_state.pop("ztvp_dynamic_open_run_id", None)
+            st.session_state.pop("ztvp_dynamic_open_run_status", None)
+            st.session_state.pop("ztvp_dynamic_open_report_path", None)
+            st.session_state.pop("ztvp_dynamic_pending_scenario_id", None)
+            st.rerun()
+
+
+def _render_dynamic_page_navigation() -> None:
+    home_col, spacer_col = st.columns([0.16, 0.84])
+
+    with home_col:
+        if st.button("Home", key="ztvp_dynamic_page_home", use_container_width=True):
+            _go_home()
             st.rerun()
 
 
@@ -920,6 +1036,8 @@ def render_dynamic_validation_page(
     open_scenario = scenario_by_key.get(open_key)
 
     if open_key and open_scenario is None:
+        pending_sid = st.session_state.get("ztvp_dynamic_pending_scenario_id") or open_key
+        st.warning(f"Scenario route not found for {pending_sid}.")
         st.session_state.pop("ztvp_dynamic_open_scenario", None)
         open_key = None
 
@@ -929,39 +1047,38 @@ def render_dynamic_validation_page(
         _render_scenario_detail_card(open_scenario)
 
         st.markdown("---")
-
         if _is_idc001(open_scenario):
             if render_idc001_runner is None:
                 try:
                     from dynamic_idc001 import render_idc001_runner as fallback_idc001_runner
                     fallback_idc001_runner(project_root)
                 except Exception as exc:
-                    st.error("ID-C-001 runner could not be loaded.")
+                    st.error("ID-DV-001 runner could not be loaded.")
                     st.exception(exc)
             else:
                 render_idc001_runner(project_root)
 
         elif _is_idc002(open_scenario):
             if render_idc002_runner is None:
-                st.error("ID-C-002 runner could not be loaded. Check ui/dynamic_idc002.py.")
+                st.error("ID-DV-002 runner could not be loaded. Check ui/dynamic_idc002.py.")
             else:
                 render_idc002_runner(project_root)
 
         elif _is_idc003(open_scenario):
             if render_idc003_runner is None:
-                st.error("ID-C-003 runner could not be loaded. Check ui/dynamic_idc003.py.")
+                st.error("ID-DV-003 runner could not be loaded. Check ui/dynamic_idc003.py.")
             else:
                 render_idc003_runner(project_root)
 
         elif _is_idc004(open_scenario):
             if render_idc004_runner is None:
-                st.error("ID-C-004 runner could not be loaded. Check ui/dynamic_idc004.py.")
+                st.error("ID-DV-004 runner could not be loaded. Check ui/dynamic_idc004.py.")
             else:
                 render_idc004_runner(project_root)
 
         elif _is_idc005(open_scenario):
             if render_idc005_runner is None:
-                st.error("ID-C-005 runner could not be loaded. Check ui/dynamic_idc005.py.")
+                st.error("ID-DV-005 runner could not be loaded. Check ui/dynamic_idc005.py.")
             else:
                 render_idc005_runner(project_root)
 
@@ -970,7 +1087,7 @@ def render_dynamic_validation_page(
                 from dynamic_cld001 import render_cld001_runner as _cld001_runner
                 _cld001_runner(project_root)
             except Exception as exc:
-                st.error("CLD-C-001 runner could not be loaded.")
+                st.error("APP-DV-008 runner could not be loaded.")
                 st.exception(exc)
         elif _is_appc002(locals().get("open_scenario", locals().get("selected", {}))):
             if render_appc002_runner is None:
@@ -991,6 +1108,13 @@ def render_dynamic_validation_page(
                 st.error("APP-DV-007 runner could not be loaded. Check ui/dynamic_appdv007.py.")
             else:
                 render_appdv007_runner(project_root)
+
+
+        elif _is_appdv004(locals().get("open_scenario", locals().get("selected", {}))):
+            if render_appdv004_runner is None:
+                st.error("APP-DV-004 runner could not be loaded. Check ui/dynamic_appdv004.py.")
+            else:
+                render_appdv004_runner(project_root)
 
 
         elif _is_devdv004(locals().get("open_scenario", locals().get("selected", {}))):
@@ -1023,7 +1147,10 @@ def render_dynamic_validation_page(
 
         return
 
-    pillars = sorted({_pillar(item) for item in scenarios if _pillar(item)})
+    _render_dynamic_page_navigation()
+
+    available_pillars = {_pillar(item) for item in scenarios if _pillar(item)}
+    pillars = [pillar for pillar in NAV_PILLARS if pillar in available_pillars]
 
     if not pillars:
         st.warning("No pillars were found in the Dynamic Validation catalog.")

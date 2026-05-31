@@ -10,6 +10,10 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from background_jobs import get_active_run, start_scenario_job
+from ca_summary import mfa_recommendations, summarize_mfa_report
+from run_state import ACTIVE_STATUSES, request_cancel, selected_run_for_scenario
+
 
 EVIDENCE_COLUMNS = [
     "CreatedDateTime",
@@ -484,6 +488,74 @@ def _render_active_state(state: dict) -> None:
         st.json(state)
 
 
+def _safe_existing_path(project_root: Path, raw_path: object) -> Path | None:
+    if raw_path is None:
+        return None
+    text = str(raw_path).strip()
+    if not text or text.lower() in {"none", "null"}:
+        return None
+    path = Path(text)
+    if not path.is_absolute():
+        path = project_root / path
+    return path if path.exists() and path.is_file() else None
+
+
+def _render_background_run_panel(project_root: Path, run: dict) -> None:
+    if not run:
+        return
+    status = str(run.get("status") or "").lower()
+    polls = f"{run.get('poll_attempts', 0)} / {run.get('max_poll_attempts', 'N/A')}"
+    elapsed = int(run.get("elapsed_seconds") or 0)
+    remaining = int(run.get("remaining_seconds") or 0)
+    _alert("ID-DV-001 validation is currently running." if status in ACTIVE_STATUSES else f"ID-DV-001 run is {status}.", "info" if status in ACTIVE_STATUSES else "warn")
+    st.markdown(
+        f"""
+<div class="ztvp-grid-3">
+    {_metric("Phase", run.get("phase", "N/A"))}
+    {_metric("Polls", polls)}
+    {_metric("Tenant evidence", run.get("tenant_evidence_status", "N/A"))}
+</div>
+<div class="ztvp-grid-3">
+    {_metric("Elapsed", f"{elapsed}s")}
+    {_metric("Remaining", f"{remaining}s")}
+    {_metric("Progress", f"{int(run.get('progress_percent') or 0)}%")}
+</div>
+<div class="ztvp-grid">
+    {_metric("Test user", run.get("test_user") or run.get("decoy_user") or "N/A")}
+    {_metric("Target app", run.get("target_app") or "Azure Portal / Microsoft 365 admin resources")}
+    {_metric("Message", run.get("current_message", "N/A"))}
+    {_metric("Run ID", run.get("run_id", "N/A"))}
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Open Active Runs", key="idc001_open_active_runs", use_container_width=True):
+            st.session_state["pending_navigation"] = {"main_navigation": "Active Runs"}
+            st.rerun()
+    with col2:
+        if status in ACTIVE_STATUSES and st.button("Cancel ID-DV-001 run", key="idc001_cancel_run", use_container_width=True):
+            request_cancel(project_root, str(run.get("run_id") or ""))
+            st.rerun()
+
+
+def _render_completed_background_run(project_root: Path, run: dict) -> bool:
+    report_path = _safe_existing_path(project_root, run.get("report_path") or run.get("report_json_path"))
+    html_path = _safe_existing_path(project_root, run.get("html_report_path") or run.get("report_html_path"))
+    if report_path is None:
+        return False
+    report = _load_json(report_path)
+    if html_path is None:
+        candidate = report_path.with_suffix(".html")
+        if not candidate.exists():
+            _write_html_report(report, candidate)
+        html_path = candidate if candidate.exists() else None
+    st.markdown("### Selected ID-DV-001 run")
+    _render_report(report, report_path, html_path or report_path.with_suffix(".html"), "")
+    return True
+
+
 def _write_html_report(report: dict, html_path: Path) -> None:
     html_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -494,6 +566,7 @@ def _write_html_report(report: dict, html_path: Path) -> None:
     role = managed.get("role_assignment", {}) or {}
     warnings = report.get("warnings", []) or []
     attribution = report.get("policy_attribution", {}) or {}
+    mfa = summarize_mfa_report(report)
 
     rows = ""
 
@@ -518,8 +591,11 @@ def _write_html_report(report: dict, html_path: Path) -> None:
         rows = '<tr><td colspan="11">No sign-in evidence found in the selected window.</td></tr>'
 
     warning_rows = "".join([f"<li>{_safe(w)}</li>" for w in warnings]) or "<li>No warnings were generated for this run.</li>"
-    policy_names = attribution.get("conditional_access_mfa_policy_names", []) or []
-    policy_names_text = ", ".join([str(x) for x in policy_names]) if policy_names else "None attributed"
+    relevant_policy_rows = "".join(
+        f"<tr><td>{_safe(row.get('Policy'))}</td><td>{_safe(row.get('Result'))}</td><td>{_safe(row.get('Grant control'))}</td><td>{_safe(row.get('Meaning'))}</td></tr>"
+        for row in (mfa.get("relevant_policies") or [])
+    ) or '<tr><td colspan="4">None found for this tested sign-in.</td></tr>'
+    rec_rows = "".join(f"<li>{_safe(item)}</li>" for item in mfa_recommendations(str(mfa.get("verdict"))))
 
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     display_status = _friendly_status(report.get("status"))
@@ -608,10 +684,16 @@ pre {{
 </div>
 
 <div class="metrics">
-<div class="metric"><span>Status</span><strong>{_safe(display_status)}</strong></div>
-<div class="metric"><span>Risk</span><strong>{_safe(report.get("risk"))}</strong></div>
-<div class="metric"><span>Interactive Sign-ins</span><strong>{_safe(metrics.get("interactive_signins_count", 0))}</strong></div>
-<div class="metric"><span>Password-only Privileged Success</span><strong>{_safe(metrics.get("password_only_privileged_success_count", 0))}</strong></div>
+<div class="metric"><span>Verdict</span><strong>{_safe(mfa.get("verdict"))}</strong></div>
+<div class="metric"><span>MFA required</span><strong>{_safe(mfa.get("mfa_required"))}</strong></div>
+<div class="metric"><span>MFA completed</span><strong>{_safe(mfa.get("mfa_completed"))}</strong></div>
+<div class="metric"><span>Sign-in result</span><strong>{_safe(mfa.get("sign_in_result"))}</strong></div>
+</div>
+<div class="metrics">
+<div class="metric"><span>Access without MFA</span><strong>{_safe(mfa.get("access_without_mfa"))}</strong></div>
+<div class="metric"><span>Effective policy</span><strong>{_safe(mfa.get("effective_policy"))}</strong></div>
+<div class="metric"><span>CA result</span><strong>{_safe(mfa.get("conditional_access_result"))}</strong></div>
+<div class="metric"><span>Risk</span><strong>{_safe(mfa.get("risk"))}</strong></div>
 </div>
 
 <div class="card">
@@ -622,18 +704,21 @@ pre {{
 </div>
 
 <div class="card">
-<h2>Executive Summary</h2>
-<p>{_safe(report.get("executive_summary"))}</p>
-<p><b>Final Claim:</b> {_safe(report.get("final_claim"))}</p>
-<p>{_safe(report.get("validation_explanation"))}</p>
+<h2>Decision</h2>
+<p><b>{_safe(mfa.get("decision"))}</b></p>
+<p>{_safe(mfa.get("conclusion"))}</p>
 </div>
 
 <div class="card">
-<h2>Policy Attribution</h2>
-<p><b>MFA Source:</b> {_safe(attribution.get("mfa_source"))}</p>
-<p><b>CA MFA Policy Applied:</b> {_safe(attribution.get("conditional_access_mfa_policy_applied"))}</p>
-<p><b>Attributed CA MFA Policies:</b> {_safe(policy_names_text)}</p>
-<p>{_safe(attribution.get("interpretation"))}</p>
+<h2>Effective Policy</h2>
+<p><b>Policy that worked:</b> {_safe(mfa.get("effective_policy"))}</p>
+<p><b>Policy result:</b> {_safe(mfa.get("policy_result"))}</p>
+<p><b>Grant control:</b> {_safe(mfa.get("grant_control"))}</p>
+<p><b>Report-only policy detected:</b> {_safe(mfa.get("report_only_policy"))}</p>
+<table>
+<thead><tr><th>Policy</th><th>Result</th><th>Grant control</th><th>Meaning</th></tr></thead>
+<tbody>{relevant_policy_rows}</tbody>
+</table>
 </div>
 
 <div class="card">
@@ -650,11 +735,12 @@ pre {{
 </div>
 
 <div class="card">
-<h2>Evidence Metrics</h2>
-<pre>{_safe(json.dumps(metrics, indent=2))}</pre>
+<h2>Recommendations</h2>
+<ul>{rec_rows}</ul>
 </div>
 
-<div class="card">
+<details class="card">
+<summary><b>Technical evidence details</b></summary>
 <h2>Sign-in Evidence</h2>
 <table>
 <thead>
@@ -676,7 +762,9 @@ pre {{
 {rows}
 </tbody>
 </table>
-</div>
+<h2>Raw JSON</h2>
+<pre>{_safe(json.dumps(report, indent=2, default=str))}</pre>
+</details>
 
 <div class="footer">
 Generated by Zero Trust Validation Platform on {generated_at}.
@@ -697,94 +785,91 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
     managed = report.get("managed_decoy", {}) or {}
     role = managed.get("role_assignment", {}) or {}
     attribution = report.get("policy_attribution", {}) or {}
+    mfa = summarize_mfa_report(report)
 
     display_status = _friendly_status(report.get("status"))
     status_tone = _tone_for_status(report.get("status"))
 
-    _alert("Probe completed successfully.", "good")
+    _alert(str(mfa.get("decision") or "Probe completed."), _tone_for_status(mfa.get("verdict")))
 
     st.markdown(
         f"""
 <div class="ztvp-grid">
-    {_metric("Status", display_status, status_tone)}
-    {_metric("Risk", report.get("risk", "Unknown"), "good" if report.get("risk") == "LOW" else "warn")}
-    {_metric("Interactive Sign-ins", metrics.get("interactive_signins_count", 0))}
-    {_metric("Password-only Privileged Success", metrics.get("password_only_privileged_success_count", 0), "bad" if metrics.get("password_only_privileged_success_count", 0) else "good")}
+    {_metric("Verdict", mfa.get("verdict"), _tone_for_status(mfa.get("verdict")))}
+    {_metric("MFA required", mfa.get("mfa_required"), "good" if mfa.get("mfa_required") == "Yes" else "bad" if mfa.get("mfa_required") == "No" else "warn")}
+    {_metric("MFA completed", mfa.get("mfa_completed"), "good" if mfa.get("mfa_completed") == "Yes" else "warn")}
+    {_metric("Sign-in result", mfa.get("sign_in_result"))}
+</div>
+<div class="ztvp-grid">
+    {_metric("Access without MFA", mfa.get("access_without_mfa"), "bad" if mfa.get("access_without_mfa") == "Yes" else "good" if mfa.get("access_without_mfa") == "No" else "warn")}
+    {_metric("Effective policy", mfa.get("effective_policy"))}
+    {_metric("Conditional Access result", mfa.get("conditional_access_result"))}
+    {_metric("Risk", mfa.get("risk"), "good" if mfa.get("risk") == "LOW" else "bad" if mfa.get("risk") == "HIGH" else "warn")}
 </div>
 """,
         unsafe_allow_html=True,
     )
 
-    st.markdown("#### Control Tested")
+    st.markdown("#### Decision")
     st.markdown(
         f"""
 <div class="ztvp-card">
-    <p><b>{_safe(report.get("control_tested", ""))}</b></p>
-    <p><b>Expected result:</b> {_safe(report.get("expected_result", ""))}</p>
-    <p><b>Failure condition:</b> {_safe(report.get("failure_condition", ""))}</p>
+    <p><b>{_safe(mfa.get("decision", ""))}</b></p>
+    <p>{_safe(mfa.get("conclusion", ""))}</p>
 </div>
 """,
         unsafe_allow_html=True,
     )
 
-    st.markdown("#### Actual Validation Decision")
-    st.markdown(
-        f"""
-<div class="ztvp-card">
-    <p>{_safe(report.get("executive_summary", ""))}</p>
-    <p><b>Final claim:</b> {_safe(report.get("final_claim", ""))}</p>
-    <p class="ztvp-small">{_safe(report.get("validation_explanation", ""))}</p>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("#### Policy Attribution")
-
-    policy_names = attribution.get("conditional_access_mfa_policy_names", []) or []
-    policy_names_text = ", ".join([str(x) for x in policy_names]) if policy_names else "None attributed"
-
+    st.markdown("#### Effective policy")
     st.markdown(
         f"""
 <div class="ztvp-grid-3">
-    {_metric("MFA Source", attribution.get("mfa_source", "Unknown"))}
-    {_metric("CA MFA Policy Applied", "Yes" if attribution.get("conditional_access_mfa_policy_applied") else "No", "good" if attribution.get("conditional_access_mfa_policy_applied") else "warn")}
-    {_metric("CA MFA Policy Names", policy_names_text)}
-</div>
-<div class="ztvp-card">
-    <p>{_safe(attribution.get("interpretation", ""))}</p>
+    {_metric("Policy that worked", mfa.get("effective_policy"))}
+    {_metric("Policy result", mfa.get("policy_result"))}
+    {_metric("Grant control", mfa.get("grant_control"))}
 </div>
 """,
         unsafe_allow_html=True,
     )
 
+    relevant = mfa.get("relevant_policies") or []
+    if relevant:
+        st.markdown("#### Relevant Conditional Access policies")
+        st.dataframe(pd.DataFrame(relevant).astype(str), use_container_width=True, hide_index=True)
+    else:
+        _alert("No enforced Conditional Access policy requiring MFA was found for this sign-in.", "warn")
+
 
     if configured_policies:
-        st.markdown("#### Configured Conditional Access MFA Policies")
-
-        policy_df = pd.DataFrame(configured_policies)
-        visible_cols = [
-            col for col in [
-                "displayName",
-                "mode",
-                "enforces",
-                "reportOnly",
-                "targetsAllUsers",
-                "targetsAllApps",
-                "state",
+        with st.expander("Other policies / technical details", expanded=False):
+            policy_df = pd.DataFrame(configured_policies)
+            visible_cols = [
+                col for col in [
+                    "displayName",
+                    "mode",
+                    "enforces",
+                    "reportOnly",
+                    "targetsAllUsers",
+                    "targetsAllApps",
+                    "state",
+                ]
+                if col in policy_df.columns
             ]
-            if col in policy_df.columns
-        ]
 
-        if visible_cols:
-            st.dataframe(policy_df[visible_cols], use_container_width=True, hide_index=True)
-        else:
-            st.json(configured_policies)
+            if visible_cols:
+                st.dataframe(policy_df[visible_cols], use_container_width=True, hide_index=True)
+            else:
+                st.json(configured_policies)
 
     if warnings:
         st.markdown("#### Warnings and Interpretation")
         for warning in warnings:
             _alert(warning, "warn")
+
+    st.markdown("#### Recommendations")
+    for item in mfa_recommendations(str(mfa.get("verdict"))):
+        st.markdown(f"- {item}")
 
     st.markdown("#### Fresh Decoy Context")
 
@@ -844,7 +929,7 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
         st.download_button(
             "Download JSON Report",
             data=report_path.read_bytes(),
-            file_name="ID-C-001-result.json",
+            file_name="ID-DV-001-result.json",
             mime="application/json",
             use_container_width=True,
         )
@@ -853,7 +938,7 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
         st.download_button(
             "Download HTML Report",
             data=html_path.read_bytes(),
-            file_name="ID-C-001-result.html",
+            file_name="ID-DV-001-result.html",
             mime="text/html",
             use_container_width=True,
         )
@@ -871,7 +956,7 @@ def render_idc001_runner(project_root: Path) -> None:
     st.markdown(
         """
 <div class="ztvp-hero">
-    <h2>ID-C-001 — Privileged Access MFA Enforcement Validation</h2>
+    <h2>ID-DV-001 — Privileged Access MFA Enforcement Validation</h2>
     <p>This validation checks whether a temporary privileged identity can access Azure/admin resources with password-only authentication, or whether the tenant enforces MFA before access is granted.</p>
 </div>
 """,
@@ -887,6 +972,16 @@ def render_idc001_runner(project_root: Path) -> None:
     cleanup_script = project_root / "powershell" / "Engines" / "DynamicValidation" / "Cleanup-ZTVP-IDC001Decoy.ps1"
     verify_script = project_root / "powershell" / "Engines" / "DynamicValidation" / "Verify-ZTVP-IDC001Decoy.ps1"
     probe_script = project_root / "powershell" / "Engines" / "DynamicValidation" / "Invoke-ZTVP-IDC001.ps1"
+
+    requested_run_id = str(st.session_state.get("ztvp_dynamic_open_run_id") or "")
+    selected_run = selected_run_for_scenario(project_root, "ID-DV-001", requested_run_id)
+    active_run = get_active_run(project_root, "ID-DV-001", requested_run_id or None)
+    if active_run:
+        _render_background_run_panel(project_root, active_run)
+        return
+    if requested_run_id and selected_run and str(selected_run.get("status") or "").lower() in {"completed", "cancelled", "error", "timeout", "stale"}:
+        if _render_completed_background_run(project_root, selected_run):
+            return
 
     state = _load_json(state_path)
     pending_cleanup = _state_pending_cleanup(state)
@@ -948,7 +1043,7 @@ def render_idc001_runner(project_root: Path) -> None:
 
         display_name = st.text_input(
             "Display name",
-            value="ZTVP ID-C-001 Decoy Privileged User",
+            value="ZTVP ID-DV-001 Decoy Privileged User",
             key="idc001_prepare_display_name",
         )
 
@@ -997,7 +1092,7 @@ def render_idc001_runner(project_root: Path) -> None:
                 "-DecoyAliasPrefix",
                 alias_prefix.strip() or "ztvp-idc001-decoy",
                 "-DisplayName",
-                display_name.strip() or "ZTVP ID-C-001 Decoy Privileged User",
+                display_name.strip() or "ZTVP ID-DV-001 Decoy Privileged User",
             ]
 
             if selected_role["assign"]:
@@ -1118,49 +1213,22 @@ Password: {_safe(st.session_state.get("idc001_temp_password"))}
             _alert("Generate a fresh decoy user first or enter the decoy UPN.", "bad")
             return
 
-        with st.spinner("Collecting Microsoft Entra sign-in evidence through Microsoft Graph..."):
-            completed = _run_powershell(
-                project_root,
-                probe_script,
-                [
-                    "-DecoyUserPrincipalName",
-                    target_upn,
-                    "-LookbackMinutes",
-                    str(int(lookback)),
-                ],
-                timeout=900,
-            )
-
-        report_path = project_root / "powershell" / "Reports" / "Dynamic" / "ID-C-001-result.json"
-        html_path = project_root / "powershell" / "Reports" / "Dynamic" / "Html" / "ID-C-001-result.html"
-
-        if completed.returncode != 0:
-            _alert("ID-C-001 failed.", "bad")
-            st.code(completed.stderr or completed.stdout, language="text")
-            return
-
-        if not report_path.exists():
-            _alert("Probe completed, but the JSON report was not found.", "warn")
-            st.code(completed.stdout, language="text")
-            return
-
-        report = _load_json(report_path)
-        managed_state = _load_json(state_path)
-
-        if managed_state:
-            report["managed_decoy"] = {
-                "run_id": managed_state.get("run_id"),
-                "lifecycle": managed_state.get("lifecycle"),
-                "prepared_at": managed_state.get("prepared_at"),
-                "decoy_user": managed_state.get("decoy_user", {}),
-                "role_profile": managed_state.get("role_profile", {}),
-                "role_assignment": managed_state.get("role_assignment", {}),
-                "cleanup": managed_state.get("cleanup", {}),
-            }
-            _write_json(report_path, report)
-
-        _write_html_report(report, html_path)
-        _render_report(report, report_path, html_path, completed.stdout)
+        start_scenario_job(
+            project_root,
+            "ID-DV-001",
+            int(lookback),
+            30,
+            extra_args=[
+                "-DecoyUserPrincipalName",
+                target_upn,
+                "-LookbackMinutes",
+                str(int(lookback)),
+            ],
+            target="Azure Portal / Microsoft 365 admin resources",
+            tenant="Microsoft Entra ID",
+        )
+        _alert("ID-DV-001 started in the background. It is now visible in Active Runs and will keep polling if you leave this page.", "good")
+        st.rerun()
 
     _step(5, "Delete Exact Decoy and Close Test")
 

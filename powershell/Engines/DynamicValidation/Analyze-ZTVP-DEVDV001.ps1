@@ -2,7 +2,9 @@ param(
     [int]$LookbackHours = 4,
     [int]$Top = 200,
     [int]$PollSeconds = 30,
+    [int]$WaitMinutes = 15,
     [string]$WindowStartUtc = "",
+    [string]$RunId = "",
     [switch]$WaitUntilLogFound
 )
 
@@ -113,6 +115,57 @@ function Test-ZTVPDeviceTrustPolicy {
     return (
         $name -match "compliant|compliance|hybrid|join|joined|managed|intune|unmanaged|device trust|device" -or
         $controls -match "RequireCompliantDevice|CompliantDevice|compliant|domainJoined|joined|managed|Hybrid"
+    )
+}
+
+function Test-ZTVPTargetMatch {
+    param(
+        [object]$Event,
+        [string]$TargetName
+    )
+
+    $haystack = (([string]$Event.app_display_name) + " " + ([string]$Event.resource_display_name)).ToLowerInvariant()
+    $target = ([string]$TargetName).ToLowerInvariant()
+
+    if ([string]::IsNullOrWhiteSpace($target)) { return $true }
+    if ($haystack.Contains($target)) { return $true }
+
+    if ($target.Contains("microsoft 365 portal")) {
+        return ($haystack.Contains("officehome") -or $haystack.Contains("microsoft 365") -or $haystack.Contains("office 365") -or $haystack.Contains("office"))
+    }
+
+    if ($target.Contains("microsoft 365 my apps") -or $target.Contains("my apps")) {
+        return ($haystack.Contains("my apps") -or $haystack.Contains("myapps") -or $haystack.Contains("access panel"))
+    }
+
+    if ($target.Contains("sharepoint")) {
+        return $haystack.Contains("sharepoint")
+    }
+
+    if ($target.Contains("exchange") -or $target.Contains("outlook")) {
+        return ($haystack.Contains("exchange") -or $haystack.Contains("outlook"))
+    }
+
+    if ($target.Contains("entra") -or $target.Contains("azure portal")) {
+        return ($haystack.Contains("entra") -or $haystack.Contains("azure portal") -or $haystack.Contains("windows azure service management"))
+    }
+
+    return $false
+}
+
+function Test-ZTVPDeviceTrustSignal {
+    param([object]$Event)
+
+    if ($Event.device_trust_policies.Count -gt 0) { return $true }
+
+    $text = (
+        ([string]$Event.status_failure_reason) + " " +
+        ([string]$Event.status_additional_details) + " " +
+        ([string]$Event.conditional_access_status)
+    ).ToLowerInvariant()
+
+    return (
+        $text -match "compliant|compliance|hybrid|joined|managed|unmanaged|device|grant control|grant controls|not satisfied"
     )
 }
 
@@ -282,40 +335,211 @@ Write-Host "DEV-DV-001 fresh validation window: $WindowStartUtc"
 Write-Host "Waiting until a new meaningful sign-in appears for: $decoyUpn"
 Write-Host "Poll interval seconds: $PollSeconds"
 
+$targetName = [string]$state.target.name
 $summaries = @()
 $meaningfulEvents = @()
+$rejectedEvents = @()
 $pollCount = 0
+$maxPollAttempts = [Math]::Max(1, [Math]::Ceiling((([Math]::Max(1, $WaitMinutes)) * 60) / ([Math]::Max(1, $PollSeconds))))
+$lastPollUtc = $null
 
 do {
     $pollCount++
+    $lastPollUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
     $rawItems = Get-ZTVPSignInsForUser -UserPrincipalName $decoyUpn -LookbackHours $LookbackHours -Top $Top
-    $summaries = @($rawItems | ForEach-Object { Convert-ZTVPSignInSummary -Item $_ })
+    $allSummaries = @($rawItems | ForEach-Object { Convert-ZTVPSignInSummary -Item $_ })
 
-    $summaries = @(
-        $summaries | Where-Object {
-            try {
-                ([datetime]$_.created_date_time).ToUniversalTime() -ge $windowStartDateTime
-            }
-            catch {
-                $false
-            }
+    $summaries = @()
+    $meaningfulEvents = @()
+    $rejectedEvents = @()
+
+    foreach ($event in $allSummaries) {
+        $reason = ""
+        $afterWindow = $false
+        try {
+            $afterWindow = ([datetime]$event.created_date_time).ToUniversalTime() -ge $windowStartDateTime
         }
-    )
+        catch {
+            $afterWindow = $false
+        }
 
-    $meaningfulEvents = @($summaries | Where-Object { $_.is_keep_me_signed_in_noise -ne $true })
+        if (-not $afterWindow) {
+            $reason = "before validation window"
+        }
+        elseif ($event.is_keep_me_signed_in_noise -eq $true) {
+            $reason = "interrupted by keep-me-signed-in prompt"
+        }
+        elseif (-not (Test-ZTVPTargetMatch -Event $event -TargetName $targetName)) {
+            $reason = "wrong app"
+        }
+        else {
+            $event | Add-Member -NotePropertyName match_decision -NotePropertyValue "accepted" -Force
+            if ($event.is_success -eq $true) {
+                $event | Add-Member -NotePropertyName match_reason -NotePropertyValue "success without block" -Force
+            }
+            elseif (Test-ZTVPDeviceTrustSignal -Event $event) {
+                $event | Add-Member -NotePropertyName match_reason -NotePropertyValue "block found" -Force
+            }
+            elseif ($event.ca_failed -eq $true -or $event.blocking_policies.Count -gt 0) {
+                $event | Add-Member -NotePropertyName match_reason -NotePropertyValue "blocked but device-trust evidence unclear" -Force
+            }
+            elseif ($event.report_only_policies.Count -gt 0 -and $event.blocking_policies.Count -eq 0) {
+                $event | Add-Member -NotePropertyName match_reason -NotePropertyValue "report-only only" -Force
+            }
+            else {
+                $event | Add-Member -NotePropertyName match_reason -NotePropertyValue "no CA evidence" -Force
+            }
+            $summaries += $event
+            $meaningfulEvents += $event
+            continue
+        }
+
+        $event | Add-Member -NotePropertyName match_decision -NotePropertyValue "rejected" -Force
+        $event | Add-Member -NotePropertyName match_reason -NotePropertyValue $reason -Force
+        $rejectedEvents += $event
+    }
 
     if ($meaningfulEvents.Count -gt 0) {
         break
     }
 
     Write-Host "Poll #$pollCount : no meaningful sign-in found yet after $WindowStartUtc. Waiting $PollSeconds seconds..."
-    Start-Sleep -Seconds $PollSeconds
+    if ($pollCount -lt $maxPollAttempts -or $WaitUntilLogFound) {
+        Start-Sleep -Seconds $PollSeconds
+    }
 }
-while ($WaitUntilLogFound)
+while ($WaitUntilLogFound -or $pollCount -lt $maxPollAttempts)
 
 if ($meaningfulEvents.Count -eq 0) {
-    throw "No meaningful sign-in appeared yet after $WindowStartUtc. Rerun analysis or use WaitUntilLogFound."
+    $timeoutSummary = "ZTVP completed $pollCount polling attempts and did not find matching sign-in evidence."
+    $noEvidenceReason = "No matching sign-in evidence was found before timeout."
+    $signInEvidence = [PSCustomObject]@{
+        analyzed_at = (Get-Date).ToString("s")
+        validation_window_start_utc = $WindowStartUtc
+        lookback_hours = $LookbackHours
+        poll_seconds = $PollSeconds
+        poll_count = $pollCount
+        max_poll_attempts = $maxPollAttempts
+        last_poll_utc = $lastPollUtc
+        monitoring_window_minutes = $WaitMinutes
+        admin_account_used_for_log_query = $ctx.Account
+        decoy_user = $decoyUpn
+        target_app = $targetName
+        sign_in_found = $false
+        matching_sign_in_count = $summaries.Count
+        meaningful_sign_in_count = 0
+        target_app_mismatch = ($rejectedEvents | Where-Object { $_.match_reason -eq "wrong app" } | Measure-Object).Count -gt 0
+        successful_sign_in_count = 0
+        failed_sign_in_count = 0
+        ca_failure_sign_in_count = 0
+        device_trust_failure_count = 0
+        result = "Timeout / No evidence found"
+        reason = $noEvidenceReason
+        polling_summary = $timeoutSummary
+        selected_decision_basis = "monitoring window ended without matching unmanaged-device sign-in evidence"
+        match_diagnostics = @(
+            "wrong user: excluded by Microsoft Graph userPrincipalName filter before local matching",
+            "before validation window: rejected locally",
+            "wrong app: rejected locally",
+            "keep-me-signed-in interruption: rejected as noise",
+            "report-only only: retained as diagnostic evidence but not treated as enforced block",
+            "success without block: classified as FAIL when accepted"
+        )
+        all_matching_sign_ins = @($summaries)
+        rejected_sign_ins = @($rejectedEvents)
+    }
+
+    $state.sign_in_log_evidence = $signInEvidence
+    Write-ZTVPJson -Path $statePath -Object $state
+
+    $result = [PSCustomObject]@{
+        scenario_id = "DEV-DV-001"
+        display_id = "DEV-DV-001"
+        scenario_name = "Unmanaged Device Cloud Access Probe"
+        pillar = "Devices"
+        scope = "Cloud"
+        run_id = $RunId
+        mode = "Managed Decoy Unmanaged VM Browser Probe"
+        started_utc = $WindowStartUtc
+        validation_start_utc = $WindowStartUtc
+        completed_utc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        generated_at = (Get-Date).ToString("s")
+        tenant_id = $state.tenant_id
+        admin_account = $state.admin_account
+        decoy_user = [PSCustomObject]@{
+            id = $state.decoy_user.id
+            user_principal_name = $state.decoy_user.user_principal_name
+            display_name = $state.decoy_user.display_name
+            password_stored_in_report = $false
+            created_by_ztvp = $true
+        }
+        target = $state.target
+        target_app = $state.target.name
+        unmanaged_probe = $state.unmanaged_probe
+        status = "PARTIAL_NO_SIGNIN_LOG_FOUND"
+        risk = "MEDIUM"
+        executive_summary = "Monitoring window ended. ZTVP did not find a matching unmanaged-device sign-in after the validation start time."
+        final_claim = "ZTVP completed $pollCount polling attempts over the configured monitoring window, but no matching sign-in event was found for the decoy user and selected target app after the validation start time. The scenario is marked PARTIAL because the platform could not confirm the unmanaged-device access attempt from tenant evidence."
+        evidence_quality = "Partial - no matching sign-in evidence was found before timeout."
+        controlled_action = "Attempt Microsoft 365/cloud access from a clean unmanaged VM or InPrivate browser using a controlled decoy user, then wait for matching Entra sign-in and Conditional Access evidence."
+        expected_result = "Expected behavior: unmanaged or non-compliant device access should be blocked."
+        reason = $noEvidenceReason
+        polling_summary = [PSCustomObject]@{
+            poll_interval_seconds = $PollSeconds
+            polls_used = "$pollCount / $maxPollAttempts"
+            validation_start_utc = $WindowStartUtc
+            last_poll_utc = $lastPollUtc
+            matching_sign_in_found = $false
+            result = "Timeout / No evidence found"
+        }
+        sign_in_log_evidence = $signInEvidence
+        cleanup = [PSCustomObject]@{
+            decoy_user_cleanup_required = $true
+            cleanup_completed = $false
+            status = "Pending"
+        }
+        metrics = [PSCustomObject]@{
+            decoy_user_created = $true
+            validation_window_start_utc = $WindowStartUtc
+            sign_in_log_found = $false
+            matching_sign_in_count = $summaries.Count
+            meaningful_sign_in_count = 0
+            access_attempt_found = $false
+            tenant_evidence_found = $false
+            conditional_access_status = "Not available"
+            blocking_policy_name = "Not available"
+            device_compliance_management_state = "Unknown"
+            successful_sign_in_count = 0
+            failed_sign_in_count = 0
+            ca_failure_sign_in_count = 0
+            device_trust_failure_count = 0
+            poll_attempts = $pollCount
+            max_poll_attempts = $maxPollAttempts
+            poll_interval_seconds = $PollSeconds
+            last_poll_utc = $lastPollUtc
+            polling_stopped_early = $false
+        }
+        recommendations = @(
+            "Increase the monitoring window to 30 or 60 minutes.",
+            "Verify the login was performed after clicking Start Fresh Validation Window.",
+            "Confirm the login was performed with the decoy user, not the admin account.",
+            "Confirm the selected target app matches the app opened in Sandbox.",
+            "Check Entra sign-in log delay manually.",
+            "If using My Apps, also try Microsoft 365 Portal or SharePoint Online depending on the selected target.",
+            "Rerun analysis after the sign-in appears in Entra logs."
+        )
+        limitations = @(
+            "No matching sign-in was found before the monitoring window ended.",
+            "The decoy user is temporary and must be cleaned up."
+        )
+    }
+
+    Write-ZTVPJson -Path $reportPath -Object $result
+    Write-Host "DEV-DV-001 analysis completed with no matching sign-in evidence."
+    Write-Host "Status: PARTIAL_NO_SIGNIN_LOG_FOUND"
+    Write-Host "Report: $reportPath"
+    return
 }
 
 $successEvents = @($meaningfulEvents | Where-Object { $_.is_success -eq $true })
@@ -331,6 +555,7 @@ $risk = "MEDIUM"
 $summary = "ZTVP found a new decoy sign-in, but could not classify the access decision."
 $finalClaim = "Sign-in evidence exists, but the unmanaged-device result is unclear."
 $evidenceQuality = "Partial - new sign-in found but no clear device-trust decision."
+$deviceTrustSignal = Test-ZTVPDeviceTrustSignal -Event $chosen
 
 if ($chosen.is_success -eq $true) {
     $status = "FAIL_UNMANAGED_DEVICE_ACCESS_ALLOWED_POLICY_NOT_ENFORCED"
@@ -339,7 +564,7 @@ if ($chosen.is_success -eq $true) {
     $finalClaim = "The decoy user reached Microsoft 365/cloud resources successfully. The expected unmanaged-device protection was not enforced for this latest access path."
     $evidenceQuality = "Strong - latest meaningful sign-in shows successful cloud access by the decoy user."
 }
-elseif ($chosen.device_trust_policies.Count -gt 0) {
+elseif ($deviceTrustSignal) {
     $status = "PASS_UNMANAGED_DEVICE_BLOCKED_BY_DEVICE_TRUST"
     $risk = "LOW"
     $summary = "The latest meaningful decoy sign-in was blocked by an enforced device-trust Conditional Access policy."
@@ -381,8 +606,19 @@ $signInEvidence = [PSCustomObject]@{
     failed_sign_in_count = $failedEvents.Count
     ca_failure_sign_in_count = $caFailureEvents.Count
     device_trust_failure_count = $deviceTrustFailureEvents.Count
+    max_poll_attempts = $maxPollAttempts
 
     selected_decision_basis = "latest meaningful sign-in after validation window"
+    target_app_mismatch = $false
+    match_diagnostics = @(
+        "wrong user: excluded by Microsoft Graph userPrincipalName filter before local matching",
+        "before validation window: rejected locally",
+        "wrong app: rejected locally",
+        "keep-me-signed-in interruption: rejected as noise",
+        "report-only only: retained as diagnostic evidence but not treated as enforced block",
+        "success without block: classified as FAIL when accepted",
+        "block found: accepted and classified based on Conditional Access/device-trust evidence"
+    )
     selected_event = $chosen
 
     created_date_time = $chosen.created_date_time
@@ -405,6 +641,7 @@ $signInEvidence = [PSCustomObject]@{
     device_trust_policies = @($chosen.device_trust_policies)
     applied_conditional_access_policies = @($chosen.applied_conditional_access_policies)
     all_matching_sign_ins = @($meaningfulEvents)
+    rejected_sign_ins = @($rejectedEvents)
 }
 
 $state.sign_in_log_evidence = $signInEvidence
@@ -416,7 +653,11 @@ $result = [PSCustomObject]@{
     scenario_name = "Unmanaged Device Cloud Access Probe"
     pillar = "Devices"
     scope = "Cloud"
+    run_id = $RunId
     mode = "Managed Decoy Unmanaged VM Browser Probe"
+    started_utc = $WindowStartUtc
+    validation_start_utc = $WindowStartUtc
+    completed_utc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     generated_at = (Get-Date).ToString("s")
 
     tenant_id = $state.tenant_id
@@ -430,6 +671,7 @@ $result = [PSCustomObject]@{
     }
 
     target = $state.target
+    target_app = $state.target.name
     unmanaged_probe = $state.unmanaged_probe
 
     status = $status
@@ -439,8 +681,13 @@ $result = [PSCustomObject]@{
     evidence_quality = $evidenceQuality
 
     controlled_action = "Attempt Microsoft 365/cloud access from a clean unmanaged VM or InPrivate browser using a controlled decoy user, then wait for the new Entra sign-in log and classify the latest meaningful event."
-    expected_result = "Unmanaged or non-compliant device access should be blocked or require a compliant/managed device."
+    expected_result = "Expected behavior: unmanaged or non-compliant device access should be blocked."
     sign_in_log_evidence = $signInEvidence
+    cleanup = [PSCustomObject]@{
+        decoy_user_cleanup_required = $true
+        cleanup_completed = $false
+        status = "Pending"
+    }
 
     metrics = [PSCustomObject]@{
         decoy_user_created = $true
@@ -460,6 +707,10 @@ $result = [PSCustomObject]@{
         blocking_policy_name = $blockingPolicyName
         device_trust_policy_found = ($null -ne $deviceTrustPolicyName)
         device_trust_policy_name = $deviceTrustPolicyName
+        detected_blocking_reason = $chosen.status_failure_reason
+        poll_attempts = $pollCount
+        max_poll_attempts = $maxPollAttempts
+        polling_stopped_early = ($pollCount -lt $maxPollAttempts)
     }
 
     recommendations = @(

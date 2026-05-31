@@ -643,7 +643,7 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
         st.download_button(
             "Download JSON Report",
             data=report_path.read_bytes(),
-            file_name="ID-C-002-result.json",
+            file_name="ID-DV-002-result.json",
             mime="application/json",
             use_container_width=True,
         )
@@ -652,7 +652,7 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
         st.download_button(
             "Download HTML Report",
             data=html_path.read_bytes(),
-            file_name="ID-C-002-result.html",
+            file_name="ID-DV-002-result.html",
             mime="text/html",
             use_container_width=True,
         )
@@ -671,7 +671,7 @@ def render_idc002_runner(project_root: Path) -> None:
     st.markdown(
         """
 <div class="ztvp-hero">
-    <h2>ID-C-002 — Device Code Flow Block Validation</h2>
+    <h2>ID-DV-002 — Device Code Flow Block Validation</h2>
     <p>This validates whether Microsoft Entra blocks a real OAuth device-code sign-in attempt before a token is issued.</p>
 </div>
 """,
@@ -733,7 +733,7 @@ def render_idc002_runner(project_root: Path) -> None:
         st.markdown("**Exact decoy user for this run**")
         st.markdown(f'<div class="ztvp-codebox">{_safe(decoy.get("user_principal_name", ""))}</div>', unsafe_allow_html=True)
 
-        with st.expander("View active ID-C-002 state"):
+        with st.expander("View active ID-DV-002 state"):
             st.json(state)
 
     else:
@@ -750,7 +750,7 @@ def render_idc002_runner(project_root: Path) -> None:
 
             display_name = st.text_input(
                 "Display name",
-                value="ZTVP ID-C-002 Device Code Decoy User",
+                value="ZTVP ID-DV-002 Device Code Decoy User",
                 key="idc002_prepare_display_name",
             )
 
@@ -759,10 +759,10 @@ def render_idc002_runner(project_root: Path) -> None:
                     "-DecoyAliasPrefix",
                     alias_prefix.strip() or "ztvp-idc002-devicecode",
                     "-DisplayName",
-                    display_name.strip() or "ZTVP ID-C-002 Device Code Decoy User",
+                    display_name.strip() or "ZTVP ID-DV-002 Device Code Decoy User",
                 ]
 
-                with st.spinner("Generating fresh ID-C-002 decoy user..."):
+                with st.spinner("Generating fresh ID-DV-002 decoy user..."):
                     completed = _run_powershell(project_root, prepare_script, args, timeout=900)
 
                 if completed.returncode != 0:
@@ -802,7 +802,7 @@ Password: {_safe(st.session_state.get("idc002_temp_password"))}
     with st.expander("Emergency local reset"):
         _alert("Use this only if the tenant user was already deleted manually and ZTVP is still showing old local state.", "warn")
 
-        if st.button("Reset Local ID-C-002 State Only", use_container_width=True):
+        if st.button("Reset Local ID-DV-002 State Only", use_container_width=True):
             for p in [
                 state_path,
                 secret_path,
@@ -816,7 +816,7 @@ Password: {_safe(st.session_state.get("idc002_temp_password"))}
                     pass
 
             _clear_session_keys()
-            _alert("Local ID-C-002 state reset.", "good")
+            _alert("Local ID-DV-002 state reset.", "good")
             st.rerun()
 
     _step(2, "Start the device-code challenge")
@@ -941,7 +941,7 @@ Password: {_safe(st.session_state.get("idc002_temp_password"))}
             html_path = project_root / "powershell" / "Reports" / "Dynamic" / "Html" / "ID-C-002-result.html"
 
             if completed.returncode != 0:
-                _alert("ID-C-002 failed.", "bad")
+                _alert("ID-DV-002 failed.", "bad")
                 st.code(completed.stderr or completed.stdout, language="text")
                 return
 
@@ -962,7 +962,7 @@ Password: {_safe(st.session_state.get("idc002_temp_password"))}
     has_active_decoy = bool(decoy.get("id")) and cleanup.get("status", "Pending") != "Completed"
 
     if not has_active_decoy:
-        _alert("No active ID-C-002 decoy exists, so there is nothing to clean up.", "info")
+        _alert("No active ID-DV-002 decoy exists, so there is nothing to clean up.", "info")
         return
 
     with st.container(border=True):
@@ -985,14 +985,14 @@ Password: {_safe(st.session_state.get("idc002_temp_password"))}
             if disable_instead:
                 args.append("-DisableInsteadOfDelete")
 
-            with st.spinner("Cleaning up ID-C-002 decoy user and local state..."):
+            with st.spinner("Cleaning up ID-DV-002 decoy user and local state..."):
                 completed = _run_powershell(project_root, cleanup_script, args, timeout=900)
 
             if completed.returncode != 0:
                 _alert("Cleanup failed.", "bad")
                 st.code(completed.stderr or completed.stdout, language="text")
             else:
-                _alert("ID-C-002 cleanup completed.", "good")
+                _alert("ID-DV-002 cleanup completed.", "good")
                 st.code(completed.stdout, language="text")
                 _clear_session_keys()
                 st.rerun()

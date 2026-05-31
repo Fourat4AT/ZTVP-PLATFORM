@@ -15,7 +15,7 @@ param(
 
     [string]$MdcaApiToken = "",
 
-    [string]$MdcaPolicyName = "ZTVP - Detect Public SharePoint File Sharing"
+    [string]$MdcaPolicyName = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -153,7 +153,9 @@ function Find-ZTVPMatchingMdcaAlert {
         [string]$PolicyName,
         [string]$RunId,
         [string]$FileName,
-        [string]$FolderName
+        [string]$FolderName,
+        [string]$SiteUrl,
+        [string]$DriveName
     )
 
     $data = @(Get-ZTVPValue -Object $AlertResponse -Name "data")
@@ -168,31 +170,124 @@ function Find-ZTVPMatchingMdcaAlert {
             $timestamp = 0
         }
 
+        if ($timestamp -gt 0 -and $timestamp -lt 1000000000000) {
+            $timestamp = $timestamp * 1000
+        }
+
         if ($timestamp -lt $StartEpochMs) {
             continue
         }
 
         $alertText = ($alert | ConvertTo-Json -Depth 50)
+        $alertTextLower = $alertText.ToLowerInvariant()
+        $policyNameLower = ""
+
+        if (-not [string]::IsNullOrWhiteSpace($PolicyName)) {
+            $policyNameLower = $PolicyName.ToLowerInvariant()
+        }
 
         $matched = $false
         $matchReason = ""
+        $detectionMethod = "None"
+        $matchingPolicyName = $null
+        $matchingFields = @()
 
-        if (-not [string]::IsNullOrWhiteSpace($PolicyName) -and $alertText -like "*$PolicyName*") {
-            $matched = $true
-            $matchReason = "Matched configured MDCA policy name."
+        $hasSharePointSource = (
+            $alertTextLower -like "*sharepoint*" -or
+            $alertTextLower -like "*one drive*" -or
+            $alertTextLower -like "*onedrive*" -or
+            $alertTextLower -like "*office 365*" -or
+            $alertTextLower -like "*microsoft 365*"
+        )
+
+        $unrelatedAlert = (
+            $alertTextLower -like "*eicar*" -or
+            $alertTextLower -like "*malware*" -or
+            $alertTextLower -like "*virus*" -or
+            $alertTextLower -like "*defender antivirus*" -or
+            $alertTextLower -like "*microsoft defender for endpoint*" -or
+            (($alertTextLower -like "*endpoint*" -or $alertTextLower -like "*device*") -and -not $hasSharePointSource)
+        )
+
+        if ($unrelatedAlert) {
+            continue
         }
-        elseif ($alertText -like "*$RunId*" -or $alertText -like "*$FileName*" -or $alertText -like "*$FolderName*" -or $alertText -like "*ZTVP*") {
+
+        $hasPublicSharingSignal = (
+            $alertTextLower -like "*public*" -or
+            $alertTextLower -like "*publicly shared*" -or
+            $alertTextLower -like "*anonymous*" -or
+            $alertTextLower -like "*anyone with the link*" -or
+            $alertTextLower -like "*sharing*" -or
+            $alertTextLower -like "*external sharing*" -or
+            $alertTextLower -like "*sharing link*" -or
+            $alertTextLower -like "*file exposure*" -or
+            $alertTextLower -like "*data exposure*"
+        )
+
+        $hasFileSignal = (
+            $alertTextLower -like "*file*" -or
+            $alertTextLower -like "*document*" -or
+            $alertTextLower -like "*driveitem*"
+        )
+
+        $runMarkerMatched = -not [string]::IsNullOrWhiteSpace($RunId) -and $alertTextLower -like "*$($RunId.ToLowerInvariant())*"
+        $fileNameMatched = -not [string]::IsNullOrWhiteSpace($FileName) -and $alertTextLower -like "*$($FileName.ToLowerInvariant())*"
+        $folderNameMatched = -not [string]::IsNullOrWhiteSpace($FolderName) -and $alertTextLower -like "*$($FolderName.ToLowerInvariant())*"
+        $siteUrlMatched = -not [string]::IsNullOrWhiteSpace($SiteUrl) -and $alertTextLower -like "*$($SiteUrl.ToLowerInvariant())*"
+        $driveNameMatched = -not [string]::IsNullOrWhiteSpace($DriveName) -and $alertTextLower -like "*$($DriveName.ToLowerInvariant())*"
+        $policyNameMatched = -not [string]::IsNullOrWhiteSpace($policyNameLower) -and $alertTextLower.Contains($policyNameLower)
+
+        if ($runMarkerMatched) { $matchingFields += "run_id" }
+        if ($fileNameMatched) { $matchingFields += "dummy_file_name" }
+        if ($folderNameMatched) { $matchingFields += "dummy_folder_name" }
+        if ($siteUrlMatched) { $matchingFields += "site_url" }
+        if ($driveNameMatched) { $matchingFields += "drive_name" }
+
+        if ($fileNameMatched -or $folderNameMatched -or $runMarkerMatched -or $siteUrlMatched -or $driveNameMatched) {
             $matched = $true
-            $matchReason = "Matched ZTVP run/file/folder marker in MDCA alert."
+            $matchReason = "Matched the controlled APP-C-003 dummy file, folder, run, site, or drive evidence in MDCA alert details."
+            $detectionMethod = "Dummy file match"
+        }
+        elseif ($hasSharePointSource -and $hasPublicSharingSignal -and $hasFileSignal) {
+            $matched = $true
+            $matchReason = "Matched SharePoint/OneDrive public file sharing alert content."
+            $detectionMethod = "SharePoint public sharing alert match"
+            $matchingFields += "sharepoint_or_onedrive_public_file_sharing_terms"
+        }
+        elseif (
+            $policyNameMatched -and
+            ($hasSharePointSource -or ($hasPublicSharingSignal -and $hasFileSignal))
+        ) {
+            $matched = $true
+            $matchReason = "Matched the optional MDCA policy name filter and SharePoint/OneDrive public sharing context."
+            $detectionMethod = "Optional policy name match"
+            $matchingPolicyName = $PolicyName
+            $matchingFields += "optional_policy_name"
         }
 
         if ($matched) {
+            $actualPolicyName = Get-ZTVPValue -Object $alert -Name "policyName"
+            if ([string]::IsNullOrWhiteSpace([string]$actualPolicyName)) {
+                $actualPolicyName = Get-ZTVPValue -Object $alert -Name "policy"
+            }
+            if ([string]::IsNullOrWhiteSpace([string]$actualPolicyName)) {
+                $actualPolicyName = Get-ZTVPValue -Object $alert -Name "name"
+            }
+            if ([string]::IsNullOrWhiteSpace([string]$actualPolicyName) -and -not [string]::IsNullOrWhiteSpace($matchingPolicyName)) {
+                $actualPolicyName = $matchingPolicyName
+            }
+
             return [PSCustomObject]@{
                 matched = $true
                 match_reason = $matchReason
+                detection_method = $detectionMethod
                 alert_id = Get-ZTVPValue -Object $alert -Name "_id"
                 id_value = Get-ZTVPValue -Object $alert -Name "idValue"
                 title = Get-ZTVPValue -Object $alert -Name "title"
+                policy_name = $actualPolicyName
+                matching_fields = @($matchingFields)
+                why_matched = $matchReason
                 description = Get-ZTVPValue -Object $alert -Name "description"
                 severity_value = Get-ZTVPValue -Object $alert -Name "severityValue"
                 status_value = Get-ZTVPValue -Object $alert -Name "statusValue"
@@ -207,6 +302,8 @@ function Find-ZTVPMatchingMdcaAlert {
     return [PSCustomObject]@{
         matched = $false
         match_reason = "No matching MDCA alert found."
+        detection_method = "None"
+        matching_fields = @()
     }
 }
 
@@ -344,9 +441,11 @@ try {
     }
 
     $siteIdResolved = [string](Get-ZTVPValue -Object $site -Name "id")
+    $siteWebUrl = [string](Get-ZTVPValue -Object $site -Name "webUrl")
 
     $drive = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0/sites/$siteIdResolved/drive"
     $driveId = [string](Get-ZTVPValue -Object $drive -Name "id")
+    $driveName = [string](Get-ZTVPValue -Object $drive -Name "name")
 
     $folderBody = @{
         name = $folderName
@@ -505,6 +604,11 @@ try {
     $alertDetected = $false
     $governanceRemediationObserved = $false
     $permissionStillExists = $true
+    $pollAttempts = 0
+    $maxPollAttempts = [Math]::Max(1, [int][Math]::Ceiling(($MonitoringWindowMinutes * 60) / [Math]::Max(1, $PollIntervalSeconds)))
+    $pollingStoppedEarly = $false
+    $earlyStopReason = $null
+    $detectionMethod = "None"
 
     if (-not $apiConfigured) {
         $warnings += "MDCA API URL or token was not provided. Automatic MDCA detection cannot be checked."
@@ -514,6 +618,8 @@ try {
         $deadline = (Get-Date).AddMinutes($MonitoringWindowMinutes)
 
         while ((Get-Date) -lt $deadline) {
+            $pollAttempts += 1
+
             try {
                 $alertResponse = Invoke-ZTVPMdcaAlertQuery -Endpoint $endpoint -Token $MdcaApiToken
                 $match = Find-ZTVPMatchingMdcaAlert `
@@ -522,11 +628,16 @@ try {
                     -PolicyName $MdcaPolicyName `
                     -RunId $runId `
                     -FileName $fileName `
-                    -FolderName $folderName
+                    -FolderName $folderName `
+                    -SiteUrl $siteWebUrl `
+                    -DriveName $driveName
 
                 if ($match.matched -eq $true) {
                     $matchedAlert = $match
                     $alertDetected = $true
+                    $pollingStoppedEarly = $true
+                    $earlyStopReason = [string]$match.match_reason
+                    $detectionMethod = [string]$match.detection_method
                 }
             }
             catch {
@@ -534,14 +645,17 @@ try {
                 break
             }
 
+            if ($alertDetected) {
+                break
+            }
+
             $permissionStillExists = Test-ZTVPPermissionStillExists -DriveId $driveId -FileId $fileId -PermissionId $permissionId
 
             if (-not $permissionStillExists) {
                 $governanceRemediationObserved = $true
-                break
-            }
-
-            if ($alertDetected) {
+                $pollingStoppedEarly = $true
+                $earlyStopReason = "Public sharing permission was removed before ZTVP cleanup."
+                $detectionMethod = "Governance/remediation match"
                 break
             }
 
@@ -553,6 +667,9 @@ try {
 
             if (-not $permissionStillExists) {
                 $governanceRemediationObserved = $true
+                $pollingStoppedEarly = $true
+                $earlyStopReason = "Public sharing permission was removed before ZTVP cleanup."
+                $detectionMethod = "Governance/remediation match"
             }
         }
     }
@@ -607,8 +724,8 @@ try {
 
     $status = "FAIL_PUBLIC_FILE_EXPOSURE_NOT_DETECTED"
     $risk = "HIGH"
-    $summary = "The controlled dummy file became publicly shared, but no matching MDCA alert or remediation evidence was found during the monitoring window."
-    $finalClaim = "Public SharePoint file exposure was created and no MDCA detection/remediation evidence was confirmed automatically."
+    $summary = "The controlled public exposure was simulated and cleaned up, but MDCA did not return matching detection or remediation evidence."
+    $finalClaim = "Public SharePoint file exposure was created and cleaned up, but no matching MDCA detection/remediation evidence was confirmed automatically."
     $evidenceQuality = "Strong exposure evidence, no matching MDCA detection evidence."
 
     if (-not $apiConfigured -or -not [string]::IsNullOrWhiteSpace($mdcaApiError)) {
@@ -625,14 +742,14 @@ try {
     elseif ($governanceRemediationObserved) {
         $status = "PASS_PUBLIC_FILE_EXPOSURE_REMEDIATED"
         $risk = "LOW"
-        $summary = "The controlled public file exposure was created and the public permission disappeared before ZTVP cleanup, indicating governance/remediation occurred."
+        $summary = "MDCA evidence was found before the wait window ended. Polling stopped early and cleanup was completed."
         $finalClaim = "MDCA or another governance process remediated the controlled public file exposure during the validation window."
         $evidenceQuality = "Strong - public permission was removed before ZTVP cleanup."
     }
     elseif ($alertDetected) {
         $status = "PASS_PUBLIC_FILE_EXPOSURE_DETECTED"
         $risk = "LOW"
-        $summary = "The controlled public file exposure was created and a matching MDCA alert was found automatically."
+        $summary = "MDCA evidence was found before the wait window ended. Polling stopped early and cleanup was completed."
         $finalClaim = "MDCA detected the controlled public file exposure during the validation window."
         $evidenceQuality = "Strong - matching MDCA alert found via API."
     }
@@ -650,7 +767,17 @@ try {
         governance_remediation_observed = $governanceRemediationObserved
         permission_still_exists_before_cleanup = $permissionStillExists
         matched_alert = $matchedAlert
+        detection_method = $detectionMethod
+        matching_alert_title = if ($matchedAlert) { $matchedAlert.title } else { $null }
+        matching_policy_name = if ($matchedAlert) { $matchedAlert.policy_name } else { $null }
+        alert_timestamp = if ($matchedAlert) { $matchedAlert.timestamp } else { $null }
+        matching_fields = if ($matchedAlert) { @($matchedAlert.matching_fields) } else { @() }
+        why_matched = if ($matchedAlert) { $matchedAlert.why_matched } else { $earlyStopReason }
         api_error = $mdcaApiError
+        poll_attempts = $pollAttempts
+        max_poll_attempts = $maxPollAttempts
+        polling_stopped_early = $pollingStoppedEarly
+        early_stop_reason = $earlyStopReason
     }
 
     $metrics = [PSCustomObject]@{
@@ -660,6 +787,16 @@ try {
         cleanup_completed = ($cleanupStatus -eq "Completed")
         monitoring_window_minutes = $MonitoringWindowMinutes
         poll_interval_seconds = $PollIntervalSeconds
+        poll_attempts = $pollAttempts
+        max_poll_attempts = $maxPollAttempts
+        polling_stopped_early = $pollingStoppedEarly
+        early_stop_reason = $earlyStopReason
+        detection_method = $detectionMethod
+        matching_alert_title = if ($matchedAlert) { $matchedAlert.title } else { $null }
+        matching_policy_name = if ($matchedAlert) { $matchedAlert.policy_name } else { $null }
+        alert_timestamp = if ($matchedAlert) { $matchedAlert.timestamp } else { $null }
+        matching_fields = if ($matchedAlert) { @($matchedAlert.matching_fields) } else { @() }
+        why_matched = if ($matchedAlert) { $matchedAlert.why_matched } else { $earlyStopReason }
     }
 
     $result = New-ZTVPResult `
@@ -689,6 +826,8 @@ try {
     Write-Host "Public link created: True"
     Write-Host "MDCA alert detected: $alertDetected"
     Write-Host "Governance remediation observed: $governanceRemediationObserved"
+    Write-Host "Poll attempts: $pollAttempts / $maxPollAttempts"
+    Write-Host "Polling stopped early: $pollingStoppedEarly"
     Write-Host "Cleanup: $cleanupStatus"
     Write-Host "Report: $reportPath"
     Write-Host ""

@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +35,39 @@ def _load_json(path: Path) -> dict:
 
     with path.open("r", encoding="utf-8-sig") as f:
         return json.load(f)
+
+
+def _archive_and_remove_local_state(state_path: Path) -> Path | None:
+    if not state_path.exists():
+        return None
+
+    history_dir = state_path.parent / "history"
+    history_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    archive_path = history_dir / f"appc002-state-local-reset-{stamp}.json"
+    shutil.copy2(state_path, archive_path)
+    state_path.unlink()
+    return archive_path
+
+
+def _latest_archived_state(state_path: Path) -> tuple[Path | None, dict]:
+    history_dir = state_path.parent / "history"
+    if not history_dir.exists():
+        return None, {}
+
+    candidates = sorted(
+        history_dir.glob("appc002-state*.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+
+    for candidate in candidates:
+        archived = _load_json(candidate)
+        decoy = archived.get("decoy_user", {}) or {}
+        if decoy.get("id") or decoy.get("user_principal_name"):
+            return candidate, archived
+
+    return None, {}
 
 
 def _run_powershell(project_root: Path, script_path: Path, args: list[str], timeout: int = 2400) -> subprocess.CompletedProcess:
@@ -542,6 +576,59 @@ def render_appc002_runner(project_root: Path) -> None:
 
     if not state:
         _alert("No active APP-C-002 decoy mailbox exists.", "good")
+        archived_state_path, archived_state = _latest_archived_state(state_path)
+
+        if archived_state_path and archived_state:
+            archived_decoy = archived_state.get("decoy_user", {}) or {}
+            archived_license = archived_state.get("assigned_license", {}) or {}
+
+            with st.expander("Recovery cleanup for latest archived APP-C-002 decoy", expanded=True):
+                _alert(
+                    "Use this if the page state was cleared but the exact APP-C-002 decoy still appears in Entra deleted users or Microsoft 365.",
+                    "warn",
+                )
+                st.markdown(
+                    f"""
+<div class="ztvp-grid-3">
+    {_metric("Archived Decoy", archived_decoy.get("user_principal_name", "N/A"))}
+    {_metric("License", archived_license.get("sku_part_number", "N/A"))}
+    {_metric("Run ID", archived_state.get("run_id", "N/A"))}
+</div>
+""",
+                    unsafe_allow_html=True,
+                )
+                archived_exchange_admin = st.text_input(
+                    "Exchange admin UPN for archived cleanup optional",
+                    value=archived_state.get("connected_account", ""),
+                    placeholder="fourat@tenant.onmicrosoft.com",
+                    key="appc002_archived_cleanup_exchange_admin",
+                )
+                confirm_archived_cleanup = st.checkbox(
+                    f"I understand this will purge only this archived APP-C-002 decoy: {archived_decoy.get('user_principal_name', 'unknown decoy')}.",
+                    key="appc002_confirm_archived_cleanup",
+                )
+
+                if st.button(
+                    "Purge Latest Archived APP-C-002 Decoy",
+                    use_container_width=True,
+                    disabled=not confirm_archived_cleanup,
+                ):
+                    args = [
+                        "-ExchangeAdminUPN",
+                        archived_exchange_admin.strip(),
+                        "-StatePathOverride",
+                        str(archived_state_path),
+                    ]
+
+                    with st.spinner("Purging archived APP-C-002 decoy from tenant deleted users..."):
+                        completed = _run_powershell(project_root, cleanup_script, args, timeout=1800)
+
+                    if completed.returncode != 0:
+                        _alert("Archived APP-C-002 cleanup failed.", "bad")
+                        st.code(f"Return code: {completed.returncode}\n\n--- STDERR ---\n{completed.stderr or ''}\n\n--- STDOUT ---\n{completed.stdout or ''}", language="text")
+                    else:
+                        _alert("Archived APP-C-002 cleanup completed.", "good")
+                        st.code(completed.stdout or "No PowerShell output captured.", language="text")
     else:
         decoy = state.get("decoy_user", {}) or {}
         license_info = state.get("assigned_license", {}) or {}
@@ -578,4 +665,24 @@ def render_appc002_runner(project_root: Path) -> None:
             else:
                 _alert("APP-C-002 cleanup completed.", "good")
                 st.code(completed.stdout or "No PowerShell output captured.", language="text")
+                st.rerun()
+
+        with st.expander("Local reset if tenant cleanup is already handled", expanded=False):
+            _alert(
+                "This only clears the APP-C-002 page state on this machine. It does not delete any tenant user, mailbox, license, inbox rule, or Exchange contact.",
+                "warn",
+            )
+            st.write(
+                "Use this only if you already deleted the decoy in the tenant, cleanup cannot authenticate, or you intentionally want to abandon this local run and start a fresh test."
+            )
+            confirm_local_reset = st.checkbox(
+                f"I understand this only clears local APP-C-002 state for {decoy.get('user_principal_name', 'the current decoy')}.",
+                key="appc002_confirm_local_reset",
+            )
+            if st.button("Clear Local APP-C-002 Page State Only", use_container_width=True, disabled=not confirm_local_reset):
+                archive_path = _archive_and_remove_local_state(state_path)
+                if archive_path is not None:
+                    _alert(f"Local APP-C-002 state was archived and cleared: {archive_path}", "good")
+                else:
+                    _alert("No local APP-C-002 state file existed.", "info")
                 st.rerun()

@@ -13,7 +13,8 @@ import pandas as pd
 import streamlit as st
 
 from background_jobs import get_active_run, start_scenario_job
-from run_state import latest_run_for_scenario
+from html_report import write_standard_html_report
+from run_state import latest_run_for_scenario, selected_run_for_scenario
 
 
 STATUS_LABELS = {
@@ -470,6 +471,8 @@ def _render_report(
     tenant_id: str = "",
     client_id: str = DEFAULT_PUBLIC_CLIENT_ID,
 ) -> None:
+    write_standard_html_report(report, html_path)
+
     status = report.get("status")
     evidence = report.get("evidence", {}) or {}
     local = evidence.get("local", {}) or {}
@@ -808,7 +811,7 @@ def render_devdv006_runner(project_root: Path) -> None:
     manual_tenant_evidence_path = scenario_dir / "devdv006-tenant-manual-evidence.json"
     defender_token_cache_path = project_root / "powershell" / "Auth" / "ztvp-defenderxdr-token-cache.json"
     report_path = project_root / "powershell" / "Reports" / "Dynamic" / "DEV-DV-006-result.json"
-    html_path = project_root / "powershell" / "Reports" / "Dynamic" / "Html" / "DEV-DV-006-result.html"
+    html_path = project_root / "powershell" / "Reports" / "Dynamic" / "DEV-DV-006-result.html"
     existing_state = _load_json(state_path) if state_path.exists() else {}
     tenant_ctx = _tenant_context(project_root, existing_state)
 
@@ -1060,7 +1063,12 @@ def render_devdv006_runner(project_root: Path) -> None:
 
         _render_defender_xdr_connect_command(tenant_ctx["tenant_id"], tenant_ctx["client_id"])
 
-    current_run = get_active_run(project_root, "DEV-DV-006") or latest_run_for_scenario(project_root, "DEV-DV-006")
+    requested_run_id = str(st.session_state.get("ztvp_dynamic_open_run_id") or "")
+    current_run = (
+        get_active_run(project_root, "DEV-DV-006", requested_run_id)
+        or selected_run_for_scenario(project_root, "DEV-DV-006", requested_run_id)
+        or latest_run_for_scenario(project_root, "DEV-DV-006")
+    )
     if current_run:
         _render_active_run_summary(current_run, "DEV-DV-006")
         if st.button("Open Active Runs", use_container_width=True, key="devdv006_open_active_runs"):
@@ -1076,7 +1084,7 @@ def render_devdv006_runner(project_root: Path) -> None:
             if str(run.get("status") or "").lower() in {"queued", "running", "polling"} and int(run.get("poll_attempts") or 0) > 0:
                 _alert("An existing scenario run is already active. ZTVP will keep polling in the background and update Active Runs.", "info")
             else:
-                _alert("Scenario run started. You can leave this page. ZTVP will keep polling in the background and update Active Runs.", "good")
+                _alert("Analysis started. You can leave this page and monitor it in Active Runs.", "good")
             st.caption(f"Run ID: {run.get('run_id')}")
             if st.button("Open Active Runs", use_container_width=True, key="devdv006_open_active_runs_after_start"):
                 _open_active_runs()

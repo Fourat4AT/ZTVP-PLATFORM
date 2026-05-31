@@ -15,6 +15,7 @@ from simulation_page import render_simulation_page
 from dynamic_idc001 import render_idc001_runner
 from dynamic_validation_page import render_dynamic_validation_page
 from active_runs_page import render_active_runs_page
+from graph_connection import render_connection_center, test_graph_connection
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 POWERSHELL_DIR = PROJECT_ROOT / "powershell"
 CATALOG_PATH = POWERSHELL_DIR / "ScenarioCatalog.ps1"
@@ -219,7 +220,8 @@ DYNAMIC_SCENARIOS: List[Dict[str, Any]] = [
 
     {
         "id": "EP-DV-001",
-        "pillar": "Endpoint",
+        "pillar": "Devices",
+        "scope": "Cloud",
         "use_case": "Endpoint Detection",
         "name": "MDE Detection Visibility Probe",
         "status": "DESIGNED",
@@ -233,7 +235,8 @@ DYNAMIC_SCENARIOS: List[Dict[str, Any]] = [
     },
     {
         "id": "EP-DV-002",
-        "pillar": "Endpoint",
+        "pillar": "Devices",
+        "scope": "Cloud",
         "use_case": "Device Compliance",
         "name": "Device Compliance Enforcement Probe",
         "status": "DESIGNED",
@@ -247,7 +250,8 @@ DYNAMIC_SCENARIOS: List[Dict[str, Any]] = [
     },
     {
         "id": "EP-DV-003",
-        "pillar": "Endpoint",
+        "pillar": "Devices",
+        "scope": "Cloud",
         "use_case": "Endpoint Protection",
         "name": "Defender Antivirus Protection Probe",
         "status": "DESIGNED",
@@ -261,7 +265,8 @@ DYNAMIC_SCENARIOS: List[Dict[str, Any]] = [
     },
     {
         "id": "EP-DV-004",
-        "pillar": "Endpoint",
+        "pillar": "Devices",
+        "scope": "Cloud",
         "use_case": "Attack Surface Reduction",
         "name": "Attack Surface Reduction Enforcement Probe",
         "status": "DESIGNED",
@@ -275,7 +280,8 @@ DYNAMIC_SCENARIOS: List[Dict[str, Any]] = [
     },
     {
         "id": "EP-DV-005",
-        "pillar": "Endpoint",
+        "pillar": "Devices",
+        "scope": "Cloud",
         "use_case": "Endpoint Response",
         "name": "Device Isolation Response Probe",
         "status": "DESIGNED",
@@ -335,14 +341,14 @@ DYNAMIC_SCENARIOS: List[Dict[str, Any]] = [
         "pillar": "Applications",
         "use_case": "Sensitive App Access",
         "name": "Sensitive App Access From Unmanaged Device Probe",
-        "status": "DESIGNED",
-        "priority": "Critical",
-        "requires": ["Entra ID P1 / Conditional Access"],
-        "goal": "Prove sensitive app access is blocked from unmanaged endpoints.",
-        "decoys": "Decoy user and unmanaged test VM/device.",
-        "test_action": "Attempt access to a sensitive app from unmanaged context.",
-        "evidence": "Sign-in logs, CA result, device state, app access result.",
-        "expected": "Access is blocked or constrained.",
+        "status": "SUPPORTED",
+        "priority": "High",
+        "requires": ["Entra ID P1 / Conditional Access", "Entra ID / Sign-in Logs"],
+        "goal": "Validate that a selected sensitive application cannot be accessed from a non-compliant or unmanaged endpoint.",
+        "decoys": "Controlled test user and Windows Sandbox or another unmanaged/non-compliant endpoint.",
+        "test_action": "Attempt access to a selected sensitive cloud app from unmanaged context, then poll Entra sign-in logs.",
+        "evidence": "Microsoft Graph signIns, Conditional Access result, applied policies, device compliance/management context.",
+        "expected": "Conditional Access blocks access because the device is not compliant or unmanaged.",
     },
     {
         "id": "APP-DV-005",
@@ -416,10 +422,10 @@ def apply_dynamic_catalog_corrections() -> List[Dict[str, Any]]:
 
     # Renumber Identity Cloud scenarios after moving app governance out.
     identity_id_map = {
-        "ID-C-007": "ID-C-005",  # Risk-Based Access Enforcement Probe
-        "ID-C-008": "ID-C-006",  # PIM Role Activation Enforcement Probe
-        "ID-C-009": "ID-C-007",  # Break-Glass Monitoring Probe
-        "ID-C-010": "ID-C-008",  # Phishing-Resistant Admin Authentication Probe
+        "ID-C-007": "ID-DV-005",  # Risk-Based Access Enforcement Probe
+        "ID-C-008": "ID-DV-006",  # PIM Role Activation Enforcement Probe
+        "ID-C-009": "ID-DV-007",  # Break-Glass Monitoring Probe
+        "ID-C-010": "ID-DV-008",  # Phishing-Resistant Admin Authentication Probe
     }
 
     for scenario in corrected:
@@ -471,16 +477,16 @@ def apply_dynamic_catalog_corrections() -> List[Dict[str, Any]]:
             )
         )
 
-    # Make Identity Cloud IDs clean and clear.
+    # Make Identity Cloud IDs follow the same public Dynamic Validation convention as other pillars.
     identity_cloud_order = [
-        ("Privileged MFA Enforcement Probe", "ID-C-001"),
-        ("Conditional Access Exclusion Bypass Probe", "ID-C-002"),
-        ("Unmanaged Device Access Probe", "ID-C-003"),
-        ("Legacy Authentication Block Probe", "ID-C-004"),
-        ("Risk-Based Access Enforcement Probe", "ID-C-005"),
-        ("PIM Role Activation Enforcement Probe", "ID-C-006"),
-        ("Break-Glass Monitoring Probe", "ID-C-007"),
-        ("Phishing-Resistant Admin Authentication Probe", "ID-C-008"),
+        ("Privileged MFA Enforcement Probe", "ID-DV-001"),
+        ("Conditional Access Exclusion Bypass Probe", "ID-DV-002"),
+        ("Unmanaged Device Access Probe", "ID-DV-003"),
+        ("Legacy Authentication Block Probe", "ID-DV-004"),
+        ("Risk-Based Access Enforcement Probe", "ID-DV-005"),
+        ("PIM Role Activation Enforcement Probe", "ID-DV-006"),
+        ("Break-Glass Monitoring Probe", "ID-DV-007"),
+        ("Phishing-Resistant Admin Authentication Probe", "ID-DV-008"),
     ]
 
     for scenario_name, new_id in identity_cloud_order:
@@ -492,16 +498,16 @@ def apply_dynamic_catalog_corrections() -> List[Dict[str, Any]]:
             ):
                 scenario["id"] = new_id
 
-    # Keep Hybrid Identity IDs clear.
+    # Keep Hybrid Identity IDs in the same ID-DV sequence.
     hybrid_order = [
-        ("Disabled Synced Account Cloud Access Probe", "ID-H-001"),
-        ("Synced Privileged User MFA Enforcement Probe", "ID-H-002"),
-        ("Synced Group Conditional Access Enforcement Probe", "ID-H-003"),
-        ("Entra Connect Sync Consistency Probe", "ID-H-004"),
-        ("On-Prem Privileged Group Change Detection Probe", "ID-H-005"),
-        ("Stale or Disabled Synced Privileged Account Probe", "ID-H-006"),
-        ("Hybrid Password and Account State Consistency Probe", "ID-H-007"),
-        ("MDI Suspicious Identity Activity Evidence Probe", "ID-H-008"),
+        ("Disabled Synced Account Cloud Access Probe", "ID-DV-011"),
+        ("Synced Privileged User MFA Enforcement Probe", "ID-DV-013"),
+        ("Synced Group Conditional Access Enforcement Probe", "ID-DV-014"),
+        ("Entra Connect Sync Consistency Probe", "ID-DV-015"),
+        ("On-Prem Privileged Group Change Detection Probe", "ID-DV-016"),
+        ("Stale or Disabled Synced Privileged Account Probe", "ID-DV-017"),
+        ("Hybrid Password and Account State Consistency Probe", "ID-DV-018"),
+        ("MDI Suspicious Identity Activity Evidence Probe", "ID-DV-012"),
     ]
 
     for scenario_name, new_id in hybrid_order:
@@ -950,6 +956,449 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.ztvp-home-module-card) butt
     font-size: 1rem;
 }
 
+.ztvp-home-dashboard {
+    max-width: 1180px;
+    margin: 0 auto;
+}
+
+.ztvp-home-hero {
+    background:
+        radial-gradient(circle at right 12%, rgba(37, 99, 235, 0.10), transparent 32%),
+        #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 24px;
+    box-shadow: 0 18px 44px rgba(15, 23, 42, 0.08);
+    padding: 34px 38px;
+    margin-bottom: 26px;
+    display: flex;
+    align-items: center;
+    gap: 22px;
+}
+
+.ztvp-home-hero-icon,
+.ztvp-home-card-icon,
+.ztvp-home-footer-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    background: #eef4ff;
+    color: #2563eb;
+    border: 1px solid #dbeafe;
+}
+
+.ztvp-home-hero-icon {
+    width: 72px;
+    height: 72px;
+    border-radius: 22px;
+}
+
+.ztvp-home-hero-icon svg,
+.ztvp-home-card-icon svg,
+.ztvp-home-footer-icon svg {
+    width: 34px;
+    height: 34px;
+    stroke: currentColor;
+}
+
+.ztvp-home-hero h1 {
+    margin: 0;
+    color: #0f172a;
+    font-size: 2.1rem;
+    line-height: 1.14;
+    font-weight: 950;
+}
+
+.ztvp-home-hero p {
+    margin: 0.7rem 0 0 0;
+    color: #475569;
+    font-size: 1.05rem;
+    line-height: 1.55;
+}
+
+.ztvp-home-card-marker {
+    display: none;
+}
+
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.ztvp-home-card-marker) {
+    background: #ffffff !important;
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 22px !important;
+    box-shadow: 0 16px 38px rgba(15, 23, 42, 0.075) !important;
+    min-height: 430px !important;
+    height: 100% !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+}
+
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.ztvp-home-card-marker)::before {
+    display: none !important;
+}
+
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.ztvp-home-card-marker) > div,
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.ztvp-home-card-marker) div[data-testid="stVerticalBlock"] {
+    height: 100% !important;
+}
+
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.ztvp-home-card-marker) div[data-testid="stVerticalBlock"] {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 0 !important;
+    padding: 24px !important;
+}
+
+.ztvp-home-feature {
+    display: flex;
+    flex-direction: column;
+    min-height: 330px;
+}
+
+.ztvp-home-card-top {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    margin-bottom: 16px;
+}
+
+.ztvp-home-card-icon {
+    width: 52px;
+    height: 52px;
+    border-radius: 16px;
+}
+
+.ztvp-home-card-icon svg {
+    width: 27px;
+    height: 27px;
+}
+
+.ztvp-home-card-title {
+    color: #0f172a;
+    font-size: 1.38rem;
+    font-weight: 950;
+    line-height: 1.2;
+    margin: 0 0 0.45rem 0;
+}
+
+.ztvp-home-card-pill {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    background: #eef4ff;
+    border: 1px solid #dbeafe;
+    color: #1d4ed8;
+    padding: 6px 10px;
+    font-size: 0.78rem;
+    font-weight: 850;
+}
+
+.ztvp-home-card-description {
+    color: #475569;
+    font-size: 0.98rem;
+    line-height: 1.62;
+    margin: 0 0 18px 0;
+}
+
+.ztvp-home-chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+    margin: 0 0 20px 0;
+}
+
+.ztvp-home-chip {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    background: #f1f5ff;
+    border: 1px solid #dbeafe;
+    color: #1e40af;
+    padding: 7px 11px;
+    font-size: 0.82rem;
+    font-weight: 760;
+}
+
+.ztvp-home-divider {
+    height: 1px;
+    background: #e2e8f0;
+    margin: 0 0 18px 0;
+}
+
+.ztvp-home-best {
+    margin-top: auto;
+    color: #475569;
+    font-size: 0.91rem;
+    line-height: 1.48;
+}
+
+.ztvp-home-best span {
+    display: block;
+    color: #0f172a;
+    font-size: 0.75rem;
+    font-weight: 950;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 0.35rem;
+}
+
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.ztvp-home-card-marker) div[data-testid="stButton"] {
+    display: flex !important;
+    justify-content: flex-end !important;
+    margin-top: 20px !important;
+}
+
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.ztvp-home-card-marker) div[data-testid="stButton"] button {
+    width: 230px !important;
+    min-width: 230px !important;
+    max-width: 230px !important;
+    height: 46px !important;
+    min-height: 46px !important;
+    border-radius: 12px !important;
+    background: #2563eb !important;
+    border: 1px solid #2563eb !important;
+    color: #ffffff !important;
+    font-size: 0.96rem !important;
+    font-weight: 850 !important;
+    box-shadow: 0 12px 24px rgba(37, 99, 235, 0.22) !important;
+}
+
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.ztvp-home-card-marker) div[data-testid="stButton"] button:hover {
+    background: #1d4ed8 !important;
+    border-color: #1d4ed8 !important;
+    color: #ffffff !important;
+    box-shadow: 0 14px 28px rgba(37, 99, 235, 0.28) !important;
+}
+
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.ztvp-home-card-marker) div[data-testid="stButton"] button p {
+    color: #ffffff !important;
+}
+
+.ztvp-home-footer {
+    margin-top: 28px;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 22px;
+    box-shadow: 0 14px 34px rgba(15, 23, 42, 0.065);
+    padding: 24px 28px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 22px;
+}
+
+.ztvp-home-footer h3 {
+    margin: 0 0 0.45rem 0;
+    color: #0f172a;
+    font-size: 1.28rem;
+    font-weight: 950;
+}
+
+.ztvp-home-footer p {
+    margin: 0;
+    color: #475569;
+    font-size: 0.98rem;
+    line-height: 1.5;
+}
+
+.ztvp-home-footer-icon {
+    width: 58px;
+    height: 58px;
+    border-radius: 18px;
+}
+
+.ztvp-tenant-panel {
+    margin-top: 30px;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 24px;
+    box-shadow: 0 16px 38px rgba(15, 23, 42, 0.07);
+    padding: 26px;
+}
+
+.ztvp-tenant-panel-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 18px;
+    margin-bottom: 18px;
+}
+
+.ztvp-tenant-panel-head h2 {
+    margin: 0;
+    color: #0f172a;
+    font-size: 1.45rem;
+    font-weight: 950;
+    line-height: 1.2;
+}
+
+.ztvp-tenant-panel-head p {
+    margin: 0.45rem 0 0 0;
+    color: #475569;
+    font-size: 0.97rem;
+    line-height: 1.55;
+}
+
+.ztvp-tenant-source-badge {
+    flex: 0 0 auto;
+    border-radius: 999px;
+    background: #ecfdf5;
+    border: 1px solid #bbf7d0;
+    color: #166534;
+    padding: 7px 11px;
+    font-size: 0.78rem;
+    font-weight: 850;
+}
+
+.ztvp-tenant-empty {
+    background: #f8fafc;
+    border: 1px dashed #cbd5e1;
+    border-radius: 18px;
+    color: #475569;
+    padding: 18px 20px;
+    line-height: 1.55;
+    font-weight: 720;
+}
+
+.ztvp-tenant-summary-grid,
+.ztvp-capability-grid,
+.ztvp-readiness-grid {
+    display: grid;
+    gap: 12px;
+}
+
+.ztvp-tenant-summary-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    margin-bottom: 20px;
+}
+
+.ztvp-tenant-summary-card,
+.ztvp-capability-card,
+.ztvp-readiness-card {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 16px;
+    padding: 14px 15px;
+}
+
+.ztvp-tenant-summary-card span,
+.ztvp-capability-card span,
+.ztvp-readiness-card span {
+    display: block;
+    color: #64748b;
+    font-size: 0.73rem;
+    font-weight: 900;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 0.4rem;
+}
+
+.ztvp-tenant-summary-card strong,
+.ztvp-capability-card strong,
+.ztvp-readiness-card strong {
+    display: block;
+    color: #0f172a;
+    font-size: 0.96rem;
+    font-weight: 900;
+    line-height: 1.32;
+    word-break: break-word;
+}
+
+.ztvp-tenant-section-title {
+    color: #0f172a;
+    font-size: 1.02rem;
+    font-weight: 950;
+    margin: 20px 0 10px 0;
+}
+
+.ztvp-capability-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.ztvp-capability-card {
+    min-height: 112px;
+}
+
+.ztvp-capability-card p,
+.ztvp-readiness-card p {
+    margin: 0.62rem 0 0 0;
+    color: #64748b;
+    font-size: 0.82rem;
+    line-height: 1.42;
+}
+
+.ztvp-status-pill {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 5px 9px;
+    font-size: 0.74rem;
+    font-weight: 850;
+    margin-top: 0.72rem;
+}
+
+.ztvp-status-available { background: #dcfce7; border: 1px solid #bbf7d0; color: #166534; }
+.ztvp-status-setup { background: #fef3c7; border: 1px solid #fde68a; color: #92400e; }
+.ztvp-status-unknown { background: #f1f5f9; border: 1px solid #cbd5e1; color: #475569; }
+.ztvp-status-unavailable { background: #fee2e2; border: 1px solid #fecaca; color: #991b1b; }
+
+.ztvp-readiness-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.ztvp-readiness-card {
+    background: #ffffff;
+}
+
+.ztvp-readiness-card ul {
+    margin: 0.7rem 0 0 1rem;
+    padding: 0;
+    color: #475569;
+    font-size: 0.84rem;
+    line-height: 1.48;
+}
+
+.ztvp-readiness-card li {
+    margin-bottom: 0.28rem;
+}
+
+@media (max-width: 780px) {
+    .ztvp-home-hero {
+        display: block;
+        padding: 26px;
+    }
+    .ztvp-home-hero-icon {
+        margin-bottom: 16px;
+    }
+    .ztvp-home-hero h1 {
+        font-size: 1.72rem;
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.ztvp-home-card-marker) {
+        min-height: 0 !important;
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.ztvp-home-card-marker) div[data-testid="stButton"],
+    div[data-testid="stVerticalBlockBorderWrapper"]:has(.ztvp-home-card-marker) div[data-testid="stButton"] button {
+        width: 100% !important;
+        min-width: 0 !important;
+        max-width: none !important;
+    }
+    .ztvp-home-footer {
+        align-items: flex-start;
+    }
+    .ztvp-tenant-panel-head,
+    .ztvp-home-footer {
+        display: block;
+    }
+    .ztvp-tenant-source-badge,
+    .ztvp-home-footer-icon {
+        display: inline-flex;
+        margin-top: 14px;
+    }
+    .ztvp-tenant-summary-grid,
+    .ztvp-capability-grid,
+    .ztvp-readiness-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
 .ztvp-muted {
     color: #475569 !important;
     font-size: 14px;
@@ -1024,6 +1473,47 @@ div[data-testid="stMetricValue"] {
     font-weight:900 !important;
 }
 
+div[data-testid="stWidgetLabel"] label,
+div[data-testid="stWidgetLabel"] p,
+label,
+.stTextInput label,
+.stSelectbox label,
+.stNumberInput label,
+.stTextArea label {
+    color:#0f172a !important;
+    opacity:1 !important;
+    font-weight:750 !important;
+}
+
+div[data-testid="stCaptionContainer"],
+div[data-testid="stCaptionContainer"] p,
+.stCaption,
+small,
+div[data-baseweb="form-control"] div {
+    color:#64748b !important;
+}
+
+input,
+textarea,
+div[data-baseweb="select"] span {
+    color:#f8fafc !important;
+}
+
+input::placeholder,
+textarea::placeholder {
+    color:#94a3b8 !important;
+    opacity:1 !important;
+}
+
+input:disabled,
+textarea:disabled,
+div[aria-disabled="true"],
+div[aria-disabled="true"] * {
+    color:#64748b !important;
+    -webkit-text-fill-color:#64748b !important;
+    opacity:1 !important;
+}
+
 .stButton > button {
     border-radius: 12px !important;
     padding: 0.58rem 0.9rem !important;
@@ -1043,7 +1533,7 @@ div[data-testid="stMetricValue"] {
 }
 
 .stButton > button p {
-    color: #0f172a !important;
+    color: inherit !important;
 }
 
 /* Primary action buttons */
@@ -1125,6 +1615,189 @@ def badge(label: str, kind: str = "info") -> str:
         "info": "badge-info",
     }.get(kind, "badge-info")
     return f'<span class="ztvp-badge {css}">{esc(label)}</span>'
+
+
+def _home_capability_status(cap_name: str, detected_caps: Dict[str, bool], caps: Dict[str, bool]) -> tuple[str, str, str]:
+    detected = bool(detected_caps.get(cap_name, False))
+    effective = bool(caps.get(cap_name, False))
+
+    if detected and effective:
+        return "Available", "available", "Detected from tenant subscriptions or service plans."
+    if effective and not detected:
+        return "Requires setup", "setup", "Enabled by consultant override; verify tenant setup."
+    return "Not detected", "unknown", "Not detected in the latest tenant discovery."
+
+
+def _home_capability_cards(detected_caps: Dict[str, bool], caps: Dict[str, bool]) -> str:
+    capability_order = [
+        "Entra ID P1 / Conditional Access",
+        "Entra ID P2 / Identity Protection",
+        "Entra ID P2 / PIM",
+        "Defender for Endpoint",
+        "Defender for Cloud Apps",
+        "Defender for Office 365",
+        "Intune / Device Compliance",
+        "Defender for Identity",
+        "Entra ID / App Consent",
+        "Entra ID / App Registration",
+        "Entra ID / Enterprise Apps",
+        "Exchange Online",
+        "Hybrid Identity",
+    ]
+    values = []
+    seen = set()
+
+    for cap_name in capability_order + sorted(set(detected_caps) | set(caps)):
+        if cap_name in seen:
+            continue
+        seen.add(cap_name)
+        if cap_name == "Exchange Online" and cap_name not in detected_caps and cap_name not in caps:
+            continue
+        status, tone, detail = _home_capability_status(cap_name, detected_caps, caps)
+        values.append(
+            f"""
+<div class="ztvp-capability-card">
+  <span>Capability</span>
+  <strong>{esc(cap_name)}</strong>
+  <p>{esc(detail)}</p>
+  <div class="ztvp-status-pill ztvp-status-{tone}">{esc(status)}</div>
+</div>
+"""
+        )
+
+    return "\n".join(values)
+
+
+def _home_display_capabilities(preflight: Dict[str, Any], detected_caps: Dict[str, bool], caps: Dict[str, bool]) -> tuple[Dict[str, bool], Dict[str, bool]]:
+    display_detected = dict(detected_caps)
+    display_caps = dict(caps)
+    joined = " ".join(sku_part_numbers(preflight) + flatten_service_plans(preflight)).upper()
+    exchange_detected = contains_any(joined, ["EXCHANGE", "EXCHANGE_S", "EXCHANGEENTERPRISE", "EXCHANGE_STANDARD"])
+    display_detected["Exchange Online"] = exchange_detected
+    display_caps.setdefault("Exchange Online", exchange_detected)
+    return display_detected, display_caps
+
+
+def _home_tenant_summary_cards(preflight: Dict[str, Any]) -> str:
+    organization = preflight.get("organization") or {}
+    tenant_name = organization.get("displayName") or preflight.get("tenant_name") or "Not detected yet"
+    tenant_id = preflight.get("tenant_id") or organization.get("id") or "Not detected yet"
+    account = preflight.get("account") or preflight.get("connected_account") or "Not detected yet"
+    skus = sku_part_numbers(preflight)
+    sku_text = ", ".join(skus[:3]) if skus else "Not detected yet"
+    if len(skus) > 3:
+        sku_text += f" +{len(skus) - 3} more"
+
+    return f"""
+<div class="ztvp-tenant-summary-grid">
+  <div class="ztvp-tenant-summary-card"><span>Tenant</span><strong>{esc(tenant_name)}</strong></div>
+  <div class="ztvp-tenant-summary-card"><span>Tenant ID</span><strong>{esc(tenant_id)}</strong></div>
+  <div class="ztvp-tenant-summary-card"><span>Connected account</span><strong>{esc(account)}</strong></div>
+  <div class="ztvp-tenant-summary-card"><span>Subscriptions</span><strong>{esc(sku_text)}</strong></div>
+</div>
+"""
+
+
+def _scenario_support_groups(scenarios: List[Dict[str, Any]], caps: Dict[str, bool]) -> tuple[list[Dict[str, Any]], list[Dict[str, Any]], list[Dict[str, Any]]]:
+    supported: list[Dict[str, Any]] = []
+    partial: list[Dict[str, Any]] = []
+    unavailable: list[Dict[str, Any]] = []
+
+    for scenario in scenarios:
+        required = scenario.get("requires") or []
+        missing = [cap for cap in required if not caps.get(cap, False)]
+        support = dynamic_support(scenario, caps)
+        if support == "SUPPORTED":
+            supported.append(scenario)
+        elif len(missing) < len(required):
+            partial.append(scenario)
+        else:
+            unavailable.append(scenario)
+
+    return supported, partial, unavailable
+
+
+def _scenario_list(items: list[Dict[str, Any]]) -> str:
+    if not items:
+        return "<p>No scenarios in this group.</p>"
+
+    rows = []
+    for scenario in items[:5]:
+        rows.append(f"<li>{esc(str(scenario.get('id') or ''))} - {esc(str(scenario.get('name') or 'Scenario'))}</li>")
+    if len(items) > 5:
+        rows.append(f"<li>+{len(items) - 5} more</li>")
+    return "<ul>" + "\n".join(rows) + "</ul>"
+
+
+def _render_home_tenant_capabilities(preflight: Optional[Dict[str, Any]], detected_caps: Dict[str, bool], caps: Dict[str, bool]) -> None:
+    if not preflight:
+        st.markdown(
+            """
+<div class="ztvp-tenant-panel">
+  <div class="ztvp-tenant-panel-head">
+    <div>
+      <h2>Detected Tenant Capabilities</h2>
+      <p>ZTVP uses tenant discovery to understand which validations are supported.</p>
+    </div>
+    <div class="ztvp-tenant-source-badge">Tenant discovery</div>
+  </div>
+<div class="ztvp-tenant-empty">
+  Tenant capability discovery has not been run yet. Run setup/preflight to detect tenant subscriptions, service plans, and validation support.
+</div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+        if st.button("Run tenant discovery", type="primary", key="home_run_tenant_discovery"):
+            with st.spinner("Running tenant discovery..."):
+                result = run_tenant_connection()
+            if result["ok"]:
+                st.session_state.connected = True
+                st.success("Tenant discovery completed.")
+                st.rerun()
+            else:
+                st.error("Tenant discovery failed.")
+                if result["stderr"].strip():
+                    st.code(result["stderr"][-6000:], language="text")
+        return
+
+    display_detected_caps, display_caps = _home_display_capabilities(preflight, detected_caps, caps)
+    supported, partial, unavailable = _scenario_support_groups(DYNAMIC_SCENARIOS, caps)
+    st.markdown(
+        f"""
+<div class="ztvp-tenant-panel">
+  <div class="ztvp-tenant-panel-head">
+    <div>
+      <h2>Detected Tenant Capabilities</h2>
+      <p>ZTVP uses tenant discovery to understand which validations are supported.</p>
+    </div>
+    <div class="ztvp-tenant-source-badge">Tenant discovery</div>
+  </div>
+  {_home_tenant_summary_cards(preflight)}
+  <div class="ztvp-tenant-section-title">Capabilities</div>
+  <div class="ztvp-capability-grid">{_home_capability_cards(display_detected_caps, display_caps)}</div>
+  <div class="ztvp-tenant-section-title">Recommended validations based on tenant capabilities</div>
+<div class="ztvp-readiness-grid">
+  <div class="ztvp-readiness-card">
+    <span>Supported</span>
+    <strong>{len(supported)} validations</strong>
+    {_scenario_list(supported)}
+  </div>
+  <div class="ztvp-readiness-card">
+    <span>Requires setup</span>
+    <strong>{len(partial)} validations</strong>
+    {_scenario_list(partial)}
+  </div>
+  <div class="ztvp-readiness-card">
+    <span>Not available</span>
+    <strong>{len(unavailable)} validations</strong>
+    {_scenario_list(unavailable)}
+  </div>
+</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
 
 def read_file(path: Path) -> str:
@@ -1427,8 +2100,8 @@ def get_dynamic_scope(scenario: dict) -> str:
     if scenario_id.startswith("APP"):
         return "Cloud"
 
-    if pillar == "Endpoint":
-        return "Device"
+    if pillar in {"Devices", "Endpoint"}:
+        return "Cloud"
 
     if pillar == "Applications":
         return "Cloud"
@@ -1534,6 +2207,42 @@ def list_reports() -> List[Path]:
     return sorted(REPORTS_DIR.glob("*-result.json"), key=lambda p: p.stat().st_mtime, reverse=True)
 
 
+def list_dynamic_and_active_reports() -> List[Path]:
+    paths: List[Path] = []
+    for folder in [REPORTS_DIR / "ActiveRuns", REPORTS_DIR / "Dynamic", REPORTS_DIR]:
+        if folder.exists():
+            paths.extend(folder.glob("*-result.json"))
+    unique: Dict[str, Path] = {}
+    for path in paths:
+        unique[str(path.resolve())] = path
+    return sorted(unique.values(), key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def report_verdict(report: Dict[str, Any]) -> str:
+    text = str(report.get("status") or report.get("verdict") or "").upper()
+    if text.startswith("PASS"):
+        return "PASS"
+    if text.startswith("FAIL"):
+        return "FAIL"
+    if text.startswith("ERROR"):
+        return "ERROR"
+    if text.startswith("CANCEL"):
+        return "CANCELLED"
+    if text.startswith("UNSUPPORTED"):
+        return "UNSUPPORTED"
+    return "PARTIAL" if text else "UNKNOWN"
+
+
+def find_html_for_report(path: Path) -> Optional[Path]:
+    candidates = [path.with_suffix(".html")]
+    if path.parent.name != "ActiveRuns":
+        candidates.append(path.parent / "Html" / path.with_suffix(".html").name)
+    for candidate in candidates:
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+
 def load_report(path: Path) -> Dict[str, Any]:
     with path.open("r", encoding="utf-8-sig") as f:
         return json.load(f)
@@ -1597,6 +2306,9 @@ if "connected" not in st.session_state:
 if "home_mode" not in st.session_state:
     st.session_state.home_mode = "home"
 
+if "main_navigation" not in st.session_state:
+    st.session_state["main_navigation"] = "Home"
+
 if "dynamic_pillar" not in st.session_state:
     st.session_state.dynamic_pillar = None
 
@@ -1612,11 +2324,50 @@ def go_home() -> None:
     st.session_state.dynamic_pillar = None
     st.session_state.dynamic_scenario_id = None
     st.session_state.pop("ztvp_dynamic_open_scenario", None)
+    st.session_state.pop("ztvp_dynamic_open_run_id", None)
+    st.session_state.pop("ztvp_dynamic_open_run_status", None)
+    st.session_state.pop("ztvp_dynamic_open_report_path", None)
+    st.session_state.pop("ztvp_dynamic_pending_scenario_id", None)
 
 
 def handle_sidebar_navigation() -> None:
     if st.session_state.get("main_navigation") == "Home":
         go_home()
+
+
+pending_navigation = st.session_state.pop("pending_navigation", None)
+if isinstance(pending_navigation, dict):
+    main_nav = pending_navigation.get("pending_main_navigation") or pending_navigation.get("main_navigation")
+    if main_nav:
+        st.session_state["main_navigation"] = main_nav
+    if pending_navigation.get("home_mode"):
+        st.session_state.home_mode = pending_navigation["home_mode"]
+    if pending_navigation.get("ztvp_dynamic_open_scenario"):
+        st.session_state["ztvp_dynamic_open_scenario"] = pending_navigation["ztvp_dynamic_open_scenario"]
+    pending_pillar = pending_navigation.get("pending_pillar", pending_navigation.get("ztvp_dynamic_pillar"))
+    pending_scope = pending_navigation.get("pending_scope", pending_navigation.get("ztvp_dynamic_scope"))
+    pending_scenario_id = pending_navigation.get("pending_scenario_id", pending_navigation.get("dynamic_scenario_id"))
+    if pending_pillar is not None:
+        st.session_state["ztvp_dynamic_pillar"] = pending_pillar
+        st.session_state.dynamic_pillar = pending_pillar
+    if pending_scope is not None:
+        st.session_state["ztvp_dynamic_scope"] = pending_scope
+    if pending_navigation.get("dynamic_pillar") is not None:
+        st.session_state.dynamic_pillar = pending_navigation["dynamic_pillar"]
+    if pending_scenario_id is not None:
+        st.session_state.dynamic_scenario_id = pending_scenario_id
+        st.session_state["ztvp_dynamic_pending_scenario_id"] = pending_scenario_id
+    if pending_navigation.get("pending_run_id"):
+        st.session_state["ztvp_dynamic_open_run_id"] = pending_navigation["pending_run_id"]
+    if pending_navigation.get("pending_run_status"):
+        st.session_state["ztvp_dynamic_open_run_status"] = pending_navigation["pending_run_status"]
+    if pending_navigation.get("pending_report_path"):
+        st.session_state["ztvp_dynamic_open_report_path"] = pending_navigation["pending_report_path"]
+
+if st.session_state.get("main_navigation") == "Home" and st.session_state.home_mode == "dynamic":
+    st.session_state["main_navigation"] = "Dynamic Validation"
+elif st.session_state.get("main_navigation") == "Home" and st.session_state.home_mode == "simulation":
+    st.session_state["main_navigation"] = "Simulation"
 
 assessment_scenarios = load_assessment_scenarios()
 reports = list_reports()
@@ -1636,9 +2387,16 @@ st.sidebar.markdown(
 )
 
 if st.session_state.connected:
+    graph_status = st.session_state.get("graph_connection_status")
+    if not graph_status:
+        graph_status = test_graph_connection()
+        st.session_state["graph_connection_status"] = graph_status
+    graph_label = "Connected" if (graph_status.get("status") in {"Connected", "Context found", "Missing scopes"} and graph_status.get("account")) else "Last connected" if graph_status.get("status") == "Last connected" and graph_status.get("account") else "Not connected"
+    graph_icon = "OK" if graph_label == "Connected" else "LAST" if graph_label == "Last connected" else "NO"
+    st.sidebar.caption(f"Microsoft Graph: {graph_icon} {graph_label}")
     page = st.sidebar.radio(
         "Navigation",
-        ["Home", "Active Runs", "Reports"],
+        ["Home", "Connection Center", "Dynamic Validation", "Simulation", "Active Runs", "Reports"],
         key="main_navigation",
         on_change=handle_sidebar_navigation,
     )
@@ -1691,21 +2449,26 @@ if not st.session_state.connected:
 
 if page == "Home":
     if st.session_state.home_mode == "home":
-        hero(
-            "Zero Trust Validation Platform",
-            "ZTVP validates whether Microsoft security controls actually work in real tenant conditions.",
-        )
-        st.caption("Run controlled validation scenarios, collect endpoint and tenant evidence, and export consultant-ready results.")
-
         st.markdown(
             """
-<div class="ztvp-section">
-  <h3>Validation Workbench</h3>
-  <p>Run controlled validation scenarios and preview tenant security changes.</p>
+<div class="ztvp-home-hero">
+  <div class="ztvp-home-hero-icon" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="none" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3l7 3v5c0 4.7-2.8 8.1-7 10-4.2-1.9-7-5.3-7-10V6l7-3z"></path>
+      <path d="M9 12l2 2 4-5"></path>
+    </svg>
+  </div>
+  <div>
+    <h1>Welcome to Zero Trust Validation Platform</h1>
+    <p>Validate. Simulate. Strengthen your Zero Trust posture with confidence.</p>
+  </div>
 </div>
 """,
             unsafe_allow_html=True,
         )
+
+        with st.container(border=True):
+            render_connection_center()
 
         col1, col2 = st.columns(2, gap="large")
 
@@ -1713,64 +2476,94 @@ if page == "Home":
             with st.container(border=True):
                 st.markdown(
                     """
-<div class="ztvp-home-module-card"></div>
-<div class="ztvp-feature-icon">🧪</div>
-<div class="ztvp-container-card-title">Dynamic Validation</div>
-<p class="ztvp-container-card-text">Run controlled scenarios with endpoint actions, tenant logs, Defender evidence, and clean verdicts.</p>
-<div class="ztvp-home-badge-row">
-  <span class="ztvp-home-badge">Controlled tests</span>
-  <span class="ztvp-home-badge">Tenant evidence</span>
-  <span class="ztvp-home-badge">Endpoint actions</span>
-  <span class="ztvp-home-badge">Clean verdicts</span>
+<div class="ztvp-home-card-marker"></div>
+<div class="ztvp-home-feature">
+  <div class="ztvp-home-card-top">
+    <div class="ztvp-home-card-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 7h16"></path>
+        <path d="M7 7v10a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2V7"></path>
+        <path d="M9 11h6"></path>
+        <path d="M9 15h4"></path>
+        <path d="M10 3h4l1 4H9l1-4z"></path>
+      </svg>
+    </div>
+    <div>
+      <div class="ztvp-home-card-title">Dynamic Validation</div>
+      <span class="ztvp-home-card-pill">Run real tests. Get real evidence.</span>
+    </div>
+  </div>
+  <p class="ztvp-home-card-description">Run controlled validation scenarios, collect tenant evidence, and produce clean PASS / PARTIAL / FAIL outcomes.</p>
+  <div class="ztvp-home-chip-row">
+    <span class="ztvp-home-chip">Controlled tests</span>
+    <span class="ztvp-home-chip">Tenant evidence</span>
+    <span class="ztvp-home-chip">Device actions</span>
+    <span class="ztvp-home-chip">Clean verdicts</span>
+  </div>
+  <div class="ztvp-home-divider"></div>
+  <div class="ztvp-home-best">
+    <span>Best for</span>
+    Proving security controls work as expected in your tenant with real evidence.
+  </div>
 </div>
-<div class="ztvp-home-action"></div>
 """,
                     unsafe_allow_html=True,
                 )
 
-                if st.button("Open Dynamic Validation", type="primary"):
-                    st.session_state.home_mode = "dynamic"
-                    st.session_state.dynamic_pillar = None
-                    st.session_state.dynamic_scenario_id = None
-                    st.session_state.pop("ztvp_dynamic_open_scenario", None)
+                if st.button("Open Dynamic Validation", type="primary", use_container_width=True):
+                    st.session_state["pending_navigation"] = {
+                        "main_navigation": "Dynamic Validation",
+                        "home_mode": "dynamic",
+                        "dynamic_pillar": None,
+                        "dynamic_scenario_id": None,
+                    }
                     st.rerun()
 
         with col2:
             with st.container(border=True):
                 st.markdown(
                     """
-<div class="ztvp-home-module-card"></div>
-<div class="ztvp-feature-icon">🔮</div>
-<div class="ztvp-container-card-title">Simulation</div>
-<p class="ztvp-container-card-text">Preview planned changes and understand likely tenant impact before configuration updates.</p>
-<div class="ztvp-home-badge-row">
-  <span class="ztvp-home-badge">Planned changes</span>
-  <span class="ztvp-home-badge">Impact preview</span>
-  <span class="ztvp-home-badge">Risk review</span>
-  <span class="ztvp-home-badge">Consultant notes</span>
+<div class="ztvp-home-card-marker"></div>
+<div class="ztvp-home-feature">
+  <div class="ztvp-home-card-top">
+    <div class="ztvp-home-card-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 19V5"></path>
+        <path d="M4 19h16"></path>
+        <path d="M8 15l3-4 3 2 4-6"></path>
+        <path d="M17 7h2v2"></path>
+      </svg>
+    </div>
+    <div>
+      <div class="ztvp-home-card-title">Simulation</div>
+      <span class="ztvp-home-card-pill">Plan changes. Understand impact.</span>
+    </div>
+  </div>
+  <p class="ztvp-home-card-description">Preview planned security changes and understand expected tenant impact before applying configuration updates.</p>
+  <div class="ztvp-home-chip-row">
+    <span class="ztvp-home-chip">Planned changes</span>
+    <span class="ztvp-home-chip">Impact preview</span>
+    <span class="ztvp-home-chip">Risk review</span>
+    <span class="ztvp-home-chip">Consultant notes</span>
+  </div>
+  <div class="ztvp-home-divider"></div>
+  <div class="ztvp-home-best">
+    <span>Best for</span>
+    Understanding the impact and risk of changes before implementation.
+  </div>
 </div>
-<div class="ztvp-home-action"></div>
 """,
                     unsafe_allow_html=True,
                 )
 
-                if st.button("Open Simulation", type="primary"):
-                    st.session_state.home_mode = "simulation"
+                if st.button("Open Simulation", type="primary", use_container_width=True):
+                    st.session_state["pending_navigation"] = {
+                        "main_navigation": "Simulation",
+                        "home_mode": "simulation",
+                    }
                     st.rerun()
 
-        st.markdown('<div class="ztvp-capabilities-section"><h3>Detected Tenant Capabilities</h3></div>', unsafe_allow_html=True)
-
-        cap_rows = []
-        for cap_name, detected_value in detected_caps.items():
-            cap_rows.append(
-                {
-                    "Capability": cap_name,
-                    "Auto Detected": "YES" if detected_value else "NO",
-                    "Effective": "YES" if caps.get(cap_name, False) else "NO",
-                }
-            )
-
-        st.dataframe(pd.DataFrame(cap_rows), use_container_width=True, hide_index=True)
+        _render_home_tenant_capabilities(preflight, detected_caps, caps)
 
         with st.expander("Consultant capability override"):
             st.write(
@@ -1785,6 +2578,24 @@ if page == "Home":
                 )
 
             st.info("Overrides affect scenario support/suggestions in this UI only.")
+
+        st.markdown(
+            """
+<div class="ztvp-home-footer">
+  <div>
+    <h3>Zero Trust. Validated.</h3>
+    <p>Build confidence in your security controls through evidence, validation, and continuous improvement.</p>
+  </div>
+  <div class="ztvp-home-footer-icon" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="none" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3l7 3v5c0 4.7-2.8 8.1-7 10-4.2-1.9-7-5.3-7-10V6l7-3z"></path>
+      <path d="M8.5 12.5l2.2 2.2 4.8-5.2"></path>
+    </svg>
+  </div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
 
     elif st.session_state.home_mode == "assessment":
         hero(
@@ -1879,19 +2690,31 @@ if page == "Home":
 
 
 
-    elif st.session_state.home_mode == "dynamic":
-        render_dynamic_validation_page(
-            scenarios=DYNAMIC_SCENARIOS,
-            caps=caps,
-            project_root=PROJECT_ROOT,
-            hero=hero,
-            badge=badge,
-            dynamic_support=dynamic_support,
-            render_idc001_runner=render_idc001_runner,
-        )
-
     elif st.session_state.home_mode == "simulation":
         render_simulation_page(PROJECT_ROOT)
+
+elif page == "Dynamic Validation":
+    st.session_state.home_mode = "dynamic"
+    render_dynamic_validation_page(
+        scenarios=DYNAMIC_SCENARIOS,
+        caps=caps,
+        project_root=PROJECT_ROOT,
+        hero=hero,
+        badge=badge,
+        dynamic_support=dynamic_support,
+        render_idc001_runner=render_idc001_runner,
+    )
+
+elif page == "Simulation":
+    st.session_state.home_mode = "simulation"
+    render_simulation_page(PROJECT_ROOT)
+
+elif page == "Connection Center":
+    hero(
+        "Connection Center",
+        "Check Microsoft Graph session health, tenant identity, and scenario scopes before running validations.",
+    )
+    render_connection_center()
 
 elif page == "Active Runs":
     render_active_runs_page(PROJECT_ROOT, hero=hero)
@@ -1899,16 +2722,105 @@ elif page == "Active Runs":
 elif page == "Reports":
     hero(
         "Reports",
-        "In production, not ready yet.",
+        "Review completed validation reports and open HTML summaries.",
     )
 
-    st.markdown(
-        """
-<div class="ztvp-card">
-    <h2>Reports workspace</h2>
-    <p>This page is in production and is not ready yet.</p>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
+    report_paths = list_dynamic_and_active_reports()
+    if not report_paths:
+        st.info("No JSON reports were found yet.")
+    else:
+        rows = []
+        loaded_reports: list[tuple[Path, Dict[str, Any], Optional[Path]]] = []
+        for path in report_paths:
+            try:
+                report = load_report(path)
+            except Exception:
+                continue
+            html_path = find_html_for_report(path)
+            loaded_reports.append((path, report, html_path))
+            devdv004_metrics = report.get("metrics") or {}
+            devdv004_found = report.get("what_ztvp_found") or {}
+            is_devdv004 = str(report.get("display_id") or report.get("scenario_id") or "").upper() == "DEV-DV-004"
+            is_cld001 = str(report.get("display_id") or report.get("scenario_id") or "").upper() in {"APP-DV-008", "CLD-DV-001", "CLD-C-001"}
+            is_idc005 = str(report.get("display_id") or report.get("scenario_id") or "").upper() in {"ID-DV-005", "ID-C-005"}
+            cld_metrics = report.get("metrics") or {}
+            cld_attempt = report.get("anonymous_link_attempt") or {}
+            cld_site = report.get("site") or {}
+            rows.append(
+                {
+                    "Scenario ID": report.get("display_id") or report.get("scenario_id") or path.stem.replace("-result", ""),
+                    "Scenario name": report.get("scenario_name") or "Unknown",
+                    "Verdict": report_verdict(report),
+                    "Risk": report.get("risk") or "Unknown",
+                    "Completed time": report.get("completed_utc") or report.get("generated_utc") or report.get("generated_at") or "",
+                    "Decoy user": (report.get("decoy_user") or {}).get("user_principal_name") if isinstance(report.get("decoy_user"), dict) else "",
+                    "Target app": (report.get("target") or {}).get("name") if isinstance(report.get("target"), dict) else report.get("target_app") or "",
+                    "Final device state": devdv004_metrics.get("final_device_state") if is_devdv004 else "",
+                    "Registered devices linked": devdv004_metrics.get("registered_devices_linked_count") if is_devdv004 else "",
+                    "Audit events count": (
+                        devdv004_metrics.get("audit_event_count") or devdv004_found.get("lifecycle_events_count") or 0
+                    ) if is_devdv004 else "",
+                    "Target site": (cld_site.get("displayName") or cld_site.get("webUrl") or "") if is_cld001 else "",
+                    "Anonymous link created": ("Yes" if cld_metrics.get("anonymous_link_created") or cld_attempt.get("link_created") else "No") if is_cld001 else "",
+                    "Link blocked": ("Yes" if cld_metrics.get("anonymous_link_denied") or cld_attempt.get("link_denied") else "No") if is_cld001 else "",
+                    "Guest invitation result": (
+                        "Succeeded" if report.get("guest_invitation_succeeded") else "Blocked/Denied" if report.get("tenant_blocked_invite") else "Attempted" if report.get("guest_invitation_attempted") else ""
+                    ) if is_idc005 else "",
+                    "Graph status": report.get("graph_connection_status") if is_idc005 else "",
+                    "Tenant evidence": (
+                        "Found"
+                        if (report.get("sign_in_log_evidence") or {}).get("meaningful_sign_in_count")
+                        or (report.get("sign_in_log_evidence") or {}).get("selected_event")
+                        or ((report.get("appdv004_evidence") or {}).get("signin_found"))
+                        or (is_devdv004 and (devdv004_metrics.get("device_registered_or_linked") or devdv004_metrics.get("audit_events_found") or devdv004_metrics.get("sign_in_evidence_found")))
+                        or (is_cld001 and (cld_metrics.get("anonymous_link_created") or cld_metrics.get("anonymous_link_denied") or cld_attempt.get("link_created") or cld_attempt.get("link_denied")))
+                        else "Not found"
+                        if report.get("sign_in_log_evidence") or report.get("appdv004_evidence") or is_devdv004 or is_cld001
+                        else ""
+                    ),
+                    "HTML report": "Available" if html_path else "Missing",
+                }
+            )
+
+        st.dataframe(pd.DataFrame(rows).astype(str), use_container_width=True, hide_index=True)
+
+        st.markdown("### Open report")
+        for index, (path, report, html_path) in enumerate(loaded_reports[:30]):
+            scenario_id = str(report.get("display_id") or report.get("scenario_id") or path.stem.replace("-result", ""))
+            title = f"{scenario_id} - {report.get('scenario_name') or 'Scenario report'}"
+            with st.container(border=True):
+                st.markdown(f"**{esc(title)}**")
+                extra = ""
+                if str(report.get("display_id") or report.get("scenario_id") or "").upper() == "DEV-DV-004":
+                    metrics = report.get("metrics") or {}
+                    extra = f" | Final device state: {metrics.get('final_device_state') or 'Unknown'} | Linked devices: {metrics.get('registered_devices_linked_count') if metrics.get('registered_devices_linked_count') is not None else '0'} | Audit events: {metrics.get('audit_event_count') if metrics.get('audit_event_count') is not None else '0'}"
+                if str(report.get("display_id") or report.get("scenario_id") or "").upper() in {"APP-DV-008", "CLD-DV-001", "CLD-C-001"}:
+                    metrics = report.get("metrics") or {}
+                    attempt = report.get("anonymous_link_attempt") or {}
+                    extra = f" | Anonymous link created: {'Yes' if metrics.get('anonymous_link_created') or attempt.get('link_created') else 'No'} | Link blocked: {'Yes' if metrics.get('anonymous_link_denied') or attempt.get('link_denied') else 'No'}"
+                if str(report.get("display_id") or report.get("scenario_id") or "").upper() in {"ID-DV-005", "ID-C-005"}:
+                    extra = f" | Guest invitation: {'Succeeded' if report.get('guest_invitation_succeeded') else 'Blocked/Denied' if report.get('tenant_blocked_invite') else 'Attempted' if report.get('guest_invitation_attempted') else 'Not attempted'} | Graph: {report.get('graph_connection_status') or 'Unknown'}"
+                st.caption(f"Verdict: {report_verdict(report)} | Risk: {report.get('risk') or 'Unknown'} | Completed: {report.get('completed_utc') or report.get('generated_utc') or report.get('generated_at') or 'Not recorded'}{extra}")
+                col_html, col_json = st.columns(2)
+                with col_html:
+                    if html_path and html_path.exists():
+                        st.download_button(
+                            "View HTML report",
+                            html_path.read_bytes(),
+                            html_path.name,
+                            "text/html",
+                            key=f"reports_html_{index}",
+                            use_container_width=True,
+                        )
+                    else:
+                        st.button("View HTML report", key=f"reports_html_missing_{index}", disabled=True, use_container_width=True)
+                with col_json:
+                    st.download_button(
+                        "Download JSON evidence",
+                        path.read_bytes(),
+                        path.name,
+                        "application/json",
+                        key=f"reports_json_{index}",
+                        use_container_width=True,
+                    )
 

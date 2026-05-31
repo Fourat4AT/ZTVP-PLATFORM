@@ -10,6 +10,8 @@ from typing import Any
 
 import pandas as pd
 import streamlit as st
+from background_jobs import start_scenario_job
+from run_state import ACTIVE_STATUSES, load_run, request_cancel, selected_run_for_scenario
 
 
 STATUS_LABELS = {
@@ -250,6 +252,43 @@ def _run_powershell(project_root: Path, script_path: Path, args: list[str], time
         capture_output=True,
         timeout=timeout,
     )
+
+
+def _render_background_run_summary(project_root: Path, run: dict) -> None:
+    status = str(run.get("status") or "").lower()
+    st.info("ID-DV-005 validation is currently running." if status in ACTIVE_STATUSES else "ID-DV-005 run state restored.")
+    cols = st.columns(4)
+    cols[0].metric("Phase", run.get("phase") or "Unknown")
+    cols[1].metric("Progress", f"{int(run.get('progress_percent') or 0)}%")
+    cols[2].metric("Graph", run.get("graph_connection_status") or "Unknown")
+    cols[3].metric("External email", run.get("external_test_email") or "Not recorded")
+    st.caption(f"Started UTC: {run.get('started_utc') or 'Not recorded'} | Last updated UTC: {run.get('last_updated_utc') or 'Not recorded'}")
+    if run.get("current_message"):
+        st.write(run.get("current_message"))
+    col_active, col_cancel = st.columns(2)
+    if col_active.button("Open Active Runs", use_container_width=True, key="idc005_open_active_runs"):
+        st.session_state["pending_navigation"] = {"main_navigation": "Active Runs", "pending_main_navigation": "Active Runs"}
+        st.rerun()
+    if status in ACTIVE_STATUSES and col_cancel.button("Cancel", use_container_width=True, key="idc005_cancel_active_run"):
+        request_cancel(project_root, str(run.get("run_id") or ""))
+        st.rerun()
+    if status not in ACTIVE_STATUSES:
+        st.markdown("#### Final output")
+        final_cols = st.columns(4)
+        final_cols[0].metric("Verdict", run.get("verdict") or "Unknown")
+        final_cols[1].metric("Risk", run.get("risk") or "Unknown")
+        final_cols[2].metric("Invitation attempted", "Yes" if run.get("guest_invitation_attempted") else "No")
+        final_cols[3].metric("Invitation succeeded", "Yes" if run.get("guest_invitation_succeeded") else "No")
+        st.write(f"Tenant blocked invite: {'Yes' if run.get('tenant_blocked_invite') else 'No'}")
+        if run.get("error_category"):
+            st.write(f"Error category: `{run.get('error_category')}`")
+        html_path = Path(str(run.get("html_report_path") or run.get("report_html_path") or ""))
+        json_path = Path(str(run.get("report_json_path") or run.get("report_path") or ""))
+        c1, c2 = st.columns(2)
+        if html_path.exists():
+            c1.download_button("View HTML report", html_path.read_bytes(), html_path.name, "text/html", use_container_width=True, key="idc005_final_html")
+        if json_path.exists():
+            c2.download_button("Download JSON evidence", json_path.read_bytes(), json_path.name, "application/json", use_container_width=True, key="idc005_final_json")
 
 
 def _css() -> None:
@@ -829,7 +868,7 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
         st.download_button(
             "Download JSON Report",
             data=report_path.read_bytes(),
-            file_name="ID-C-005-result.json",
+            file_name="ID-DV-005-result.json",
             mime="application/json",
             use_container_width=True,
         )
@@ -838,7 +877,7 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
         st.download_button(
             "Download HTML Report",
             data=html_path.read_bytes(),
-            file_name="ID-C-005-result.html",
+            file_name="ID-DV-005-result.html",
             mime="text/html",
             use_container_width=True,
         )
@@ -857,7 +896,7 @@ def render_idc005_runner(project_root: Path) -> None:
     st.markdown(
         """
 <div class="ztvp-hero">
-    <h2>ID-C-005 — External Guest Admin Portal Block Validation</h2>
+    <h2>ID-DV-005 — External Guest Admin Portal Block Validation</h2>
     <p>This validation invites a controlled external guest and proves whether guest access to Azure/admin portals is blocked.</p>
 </div>
 """,
@@ -870,6 +909,14 @@ def render_idc005_runner(project_root: Path) -> None:
     prepare_script = project_root / "powershell" / "Engines" / "DynamicValidation" / "Prepare-ZTVP-IDC005Guest.ps1"
     invoke_script = project_root / "powershell" / "Engines" / "DynamicValidation" / "Invoke-ZTVP-IDC005.ps1"
     cleanup_script = project_root / "powershell" / "Engines" / "DynamicValidation" / "Cleanup-ZTVP-IDC005Guest.ps1"
+    requested_run_id = st.session_state.get("ztvp_dynamic_open_run_id")
+    active_or_selected_run = selected_run_for_scenario(project_root, "ID-DV-005", requested_run_id)
+    if active_or_selected_run and str(active_or_selected_run.get("status") or "").lower() in ACTIVE_STATUSES:
+        _render_background_run_summary(project_root, active_or_selected_run)
+        return
+    elif active_or_selected_run and requested_run_id:
+        _render_background_run_summary(project_root, active_or_selected_run)
+        st.markdown("---")
 
     state = _load_json(state_path)
     guest = state.get("guest_user", {}) or {}
@@ -895,7 +942,7 @@ def render_idc005_runner(project_root: Path) -> None:
         st.markdown("**Exact guest user in tenant**")
         st.markdown(f'<div class="ztvp-codebox">{_safe(guest.get("user_principal_name", ""))}<br>ID: {_safe(guest.get("id", ""))}</div>', unsafe_allow_html=True)
 
-        with st.expander("View active ID-C-005 state"):
+        with st.expander("View active ID-DV-005 state"):
             st.json(state)
     else:
         _alert("Use a real external test email that you control and that can sign in through Microsoft guest redemption. Do not use your tenant admin account. Cleanup will delete the created guest object.", "info")
@@ -910,7 +957,7 @@ def render_idc005_runner(project_root: Path) -> None:
 
             display_prefix = st.text_input(
                 "Guest display name prefix",
-                value="ZTVP ID-C-005 External Guest",
+                value="ZTVP ID-DV-005 External Guest",
                 key="idc005_display_prefix",
             )
 
@@ -934,7 +981,7 @@ def render_idc005_runner(project_root: Path) -> None:
 
                 args = [
                     "-ExternalEmail", external_email.strip(),
-                    "-GuestDisplayNamePrefix", display_prefix.strip() or "ZTVP ID-C-005 External Guest",
+                    "-GuestDisplayNamePrefix", display_prefix.strip() or "ZTVP ID-DV-005 External Guest",
                     "-InviteRedirectUrl", redirect_url.strip() or "https://portal.azure.com",
                 ]
 
@@ -945,7 +992,7 @@ def render_idc005_runner(project_root: Path) -> None:
                     completed = _run_powershell(project_root, prepare_script, args, timeout=1200)
 
                 if completed.returncode != 0:
-                    _alert("ID-C-005 guest invitation failed.", "bad")
+                    _alert("ID-DV-005 guest invitation failed.", "bad")
                     error_output = f"Return code: {completed.returncode}\n\n--- STDERR ---\n{completed.stderr or ''}\n\n--- STDOUT ---\n{completed.stdout or ''}"
                     st.code(error_output.strip() or "No PowerShell output captured.", language="text")
                 else:
@@ -1093,36 +1140,17 @@ def render_idc005_runner(project_root: Path) -> None:
             if attempt_start:
                 args.extend(["-EvidenceStartUtc", attempt_start])
 
-            progress_box = st.empty()
-            progress_box.info("Polling Entra sign-in logs...")
-
-            with st.spinner("Polling Entra sign-in logs and collecting Conditional Access evidence..."):
-                completed = _run_powershell(project_root, invoke_script, args, timeout=1200)
-
-            report_path = project_root / "powershell" / "Reports" / "Dynamic" / "ID-C-005-result.json"
-            html_path = project_root / "powershell" / "Reports" / "Dynamic" / "Html" / "ID-C-005-result.html"
-
-            if completed.returncode != 0:
-                _alert("ID-C-005 validation failed.", "bad")
-                error_output = f"Return code: {completed.returncode}\n\n--- STDERR ---\n{completed.stderr or ''}\n\n--- STDOUT ---\n{completed.stdout or ''}"
-                st.code(error_output.strip() or "No PowerShell output captured.", language="text")
-                return
-
-            if not report_path.exists():
-                _alert("Validation completed, but the JSON report was not found.", "warn")
-                st.code(completed.stdout, language="text")
-                return
-
-            report = _load_json(report_path)
-            metrics = report.get("metrics", {}) or {}
-            progress_box.info(
-                "Matched "
-                f"{metrics.get('raw_guest_signins', 0)} guest rows. "
-                f"Matched {metrics.get('admin_portal_evidence_count', 0)} admin portal rows. "
-                f"Latest admin portal result: {metrics.get('latest_admin_portal_attempt_result', 'PENDING')}."
+            run = start_scenario_job(
+                project_root,
+                "ID-DV-005",
+                wait_minutes=max(1, int(lookback)),
+                poll_seconds=max(0, int(wait_seconds)),
+                extra_args=args,
+                target=external.get("external_email") or guest.get("user_principal_name") or "ID-DV-005 guest",
             )
-            _write_html_report(report, html_path)
-            _render_report(report, report_path, html_path, completed.stdout)
+            st.session_state["ztvp_dynamic_open_run_id"] = run.get("run_id")
+            _alert("ID-DV-005 evidence collection started as a background Active Run.", "good")
+            st.rerun()
 
     _step(4, "Delete exact guest and close test")
 
@@ -1133,7 +1161,7 @@ def render_idc005_runner(project_root: Path) -> None:
     has_active = bool(guest.get("id")) and cleanup.get("status", "Pending") != "Completed"
 
     if not has_active:
-        _alert("No active ID-C-005 guest run exists.", "info")
+        _alert("No active ID-DV-005 guest run exists.", "info")
         return
 
     with st.container(border=True):
@@ -1157,10 +1185,10 @@ def render_idc005_runner(project_root: Path) -> None:
                 completed = _run_powershell(project_root, cleanup_script, args, timeout=1200)
 
             if completed.returncode != 0:
-                _alert("ID-C-005 cleanup failed.", "bad")
+                _alert("ID-DV-005 cleanup failed.", "bad")
                 error_output = f"Return code: {completed.returncode}\n\n--- STDERR ---\n{completed.stderr or ''}\n\n--- STDOUT ---\n{completed.stdout or ''}"
                 st.code(error_output.strip() or "No PowerShell output captured.", language="text")
             else:
-                _alert("ID-C-005 cleanup completed.", "good")
+                _alert("ID-DV-005 cleanup completed.", "good")
                 st.code(completed.stdout, language="text")
                 st.rerun()

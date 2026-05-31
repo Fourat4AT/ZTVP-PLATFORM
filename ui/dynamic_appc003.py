@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import html
 import json
+import math
+import shutil
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 
-import pandas as pd
 import streamlit as st
+
+from html_report import write_standard_html_report
+from background_jobs import start_scenario_job
+from run_state import ACTIVE_STATUSES, is_stale, list_runs, load_run, new_run_id, request_cancel, save_run, selected_run_for_scenario, update_run, utc_now
 
 
 STATUS_LABELS = {
@@ -31,6 +37,407 @@ def _load_json(path: Path) -> dict:
         return {}
     with path.open("r", encoding="utf-8-sig") as f:
         return json.load(f)
+
+
+def _first_value(*values: object) -> str:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text and text.lower() not in {"unknown", "n/a", "none", "null"}:
+            return text
+    return ""
+
+
+def _nested(data: dict, *keys: str) -> object:
+    current: object = data
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _yes_no(value: object) -> str:
+    return "Yes" if bool(value) else "No"
+
+
+def _bool_label(value: object, unknown: str = "Unknown") -> str:
+    if value is True:
+        return "Yes"
+    if value is False:
+        return "No"
+    return unknown
+
+
+def _cleanup_action_status(cleanup: dict, keyword: str) -> str:
+    actions = " ".join(str(item) for item in (cleanup.get("actions") or [])).lower()
+    errors = " ".join(str(item) for item in (cleanup.get("errors") or [])).lower()
+    keyword = keyword.lower()
+    if keyword in actions:
+        return "Yes"
+    if keyword in errors:
+        return "No"
+    return "Unknown"
+
+
+def _scenario_result(status: object, cleanup: dict) -> str:
+    text = str(status or "").upper()
+    cleanup_completed = str(cleanup.get("status") or cleanup.get("cleanup_status") or "").lower() == "completed"
+    if not cleanup_completed:
+        return "Cleanup issue"
+    if text.startswith("PASS"):
+        return "Detected"
+    if text.startswith(("FAIL", "PARTIAL")):
+        return "Not detected"
+    return "Review needed"
+
+
+def _simple_recommendations() -> list[str]:
+    return [
+        "Create or verify an MDCA file policy for publicly shared SharePoint/OneDrive files.",
+        "Optional example policy name: MDCA-P1-M365-SharePoint-PublicSharing-Monitor.",
+        "Start with alert-only mode.",
+        "After validation, consider governance/remediation policy.",
+    ]
+
+
+def _latest_appc003_active_run(project_root: Path, run_id: str | None = None) -> dict:
+    if run_id:
+        run = selected_run_for_scenario(project_root, "APP-DV-003", run_id) or {}
+        if (
+            str(run.get("scenario_id") or "").upper() in {"APP-DV-003", "APP-C-003"}
+            and str(run.get("status") or "").lower() in ACTIVE_STATUSES
+            and not is_stale(run)
+        ):
+            return run
+    runs = [
+        run
+        for run in list_runs(project_root)
+        if str(run.get("scenario_id") or "").upper() in {"APP-DV-003", "APP-C-003"}
+        and str(run.get("status") or "").lower() in ACTIVE_STATUSES
+        and not is_stale(run)
+    ]
+    return runs[0] if runs else {}
+
+
+def _cleanup_status_is_completed(state: dict, cleanup: dict) -> bool:
+    if not cleanup:
+        return False
+    state_run_id = str(state.get("run_id") or "").strip()
+    cleanup_run_id = str(cleanup.get("run_id") or "").strip()
+    if state_run_id and cleanup_run_id and state_run_id != cleanup_run_id:
+        return False
+    status = str(cleanup.get("cleanup_status") or cleanup.get("status") or "").strip().lower()
+    return status == "completed" or cleanup.get("cleanup_completed") is True or cleanup.get("state_file_deleted") is True
+
+
+def _cleanup_state_blocks_run(state_path: Path, cleanup_path: Path) -> tuple[bool, dict, dict]:
+    state = _load_json(state_path) if state_path.exists() else {}
+    cleanup = _load_json(cleanup_path) if cleanup_path.exists() else {}
+    if not state:
+        return False, state, cleanup
+    return not _cleanup_status_is_completed(state, cleanup), state, cleanup
+
+
+def _archive_completed_cleanup_state(state_path: Path) -> Path | None:
+    if not state_path.exists():
+        return None
+    history_dir = state_path.parent / "history"
+    history_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    archive_path = history_dir / f"appc003-state-completed-ui-clear-{stamp}.json"
+    shutil.copy2(state_path, archive_path)
+    state_path.unlink()
+    return archive_path
+
+
+def _max_attempts(wait_minutes: int, poll_seconds: int) -> int:
+    return max(1, int(math.ceil((max(1, wait_minutes) * 60) / max(1, poll_seconds))))
+
+
+def _verdict_from_status(status: object) -> str | None:
+    text = str(status or "").upper()
+    if text.startswith("PASS"):
+        return "PASS"
+    if text.startswith("FAIL"):
+        return "FAIL"
+    if text.startswith("PARTIAL"):
+        return "PARTIAL"
+    return None
+
+
+def _render_stale_state_panel(state_path: Path, cleanup_path: Path, state: dict) -> None:
+    link = state.get("anonymous_public_link_attempt", {}) or {}
+    test_object = state.get("test_object", {}) or {}
+    site = state.get("site", {}) or {}
+    cleanup = _load_json(cleanup_path) if cleanup_path.exists() else {}
+    cleanup_status = _first_value(cleanup.get("cleanup_status"), "Cleanup required")
+
+    _alert("An unfinished APP-C-003 run exists. Cleanup is required before starting a new run.", "warn")
+    st.markdown(
+        f"""
+<div class="ztvp-grid-3">
+    {_metric("Run ID", state.get("run_id", "N/A"))}
+    {_metric("Site", _first_value(site.get("displayName"), site.get("webUrl"), "N/A"))}
+    {_metric("File name", test_object.get("file_name", "N/A"))}
+</div>
+<div class="ztvp-grid-3">
+    {_metric("Link created", _yes_no(link.get("public_link_created")))}
+    {_metric("Created UTC", _first_value(state.get("started_at"), state.get("started_utc"), "N/A"))}
+    {_metric("Cleanup status", cleanup_status)}
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+    with st.expander("Technical evidence details", expanded=False):
+        st.write(f"state path: `{state_path}`")
+        st.json(state)
+        if cleanup:
+            st.json(cleanup)
+
+
+def _render_active_run_panel(project_root: Path, run: dict) -> None:
+    if not run:
+        return
+
+    polls = f"{run.get('poll_attempts', 0)} / {run.get('max_poll_attempts', 'N/A')}"
+    _alert("APP-DV-003 validation is currently running.", "info")
+    st.markdown(
+        f"""
+<div class="ztvp-grid-3">
+    {_metric("Phase", run.get("phase", "N/A"))}
+    {_metric("Polls", polls)}
+    {_metric("Tenant evidence", run.get("tenant_evidence_status", "N/A"))}
+</div>
+<div class="ztvp-grid-3">
+    {_metric("Dummy file created", run.get("dummy_file_created", "Not recorded"))}
+    {_metric("Public link created", run.get("public_link_created", "Not recorded"))}
+    {_metric("Cleanup status", run.get("cleanup_status", "Not completed yet"))}
+</div>
+<div class="ztvp-grid">
+    {_metric("Current message", run.get("current_message", "N/A"))}
+    {_metric("Started UTC", run.get("started_utc", "N/A"))}
+    {_metric("Last updated UTC", run.get("last_updated_utc", "N/A"))}
+    {_metric("Run ID", run.get("run_id", "N/A"))}
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Open Active Runs", key="appc003_open_active_runs", use_container_width=True):
+            st.session_state["pending_navigation"] = {"main_navigation": "Active Runs"}
+            st.rerun()
+    with col2:
+        if st.button("Cancel APP-DV-003 run", key="appc003_cancel_run", use_container_width=True):
+            request_cancel(project_root, str(run.get("run_id") or ""))
+            st.rerun()
+
+
+def _run_powershell_with_active_run(
+    project_root: Path,
+    script_path: Path,
+    args: list[str],
+    monitoring_window_minutes: int,
+    poll_interval_seconds: int,
+    report_path: Path,
+    html_path: Path,
+    target: str,
+    tenant: str,
+    timeout: int = 4200,
+) -> tuple[subprocess.CompletedProcess, str]:
+    import os
+
+    run_id = new_run_id("APP-DV-003")
+    max_attempts = _max_attempts(monitoring_window_minutes, poll_interval_seconds)
+    now = utc_now()
+    redacted_args = ["<redacted>" if previous == "-MdcaApiToken" else value for previous, value in zip(["", *args[:-1]], args)]
+    command = " ".join(
+        [
+            str(script_path),
+            *redacted_args,
+        ]
+    )
+
+    save_run(
+        project_root,
+        {
+            "run_id": run_id,
+            "scenario_id": "APP-DV-003",
+            "scenario_name": "MDCA Public File Sharing Detection Validation",
+            "status": "polling",
+            "phase": "Polling MDCA Alerts API",
+            "verdict": None,
+            "started_utc": now,
+            "last_updated_utc": now,
+            "wait_minutes": int(monitoring_window_minutes),
+            "poll_seconds": int(poll_interval_seconds),
+            "poll_attempts": 0,
+            "max_poll_attempts": max_attempts,
+            "progress_percent": 0,
+            "target": target,
+            "tenant": tenant,
+            "local_evidence_status": "Not applicable",
+            "tenant_evidence_status": "Waiting",
+            "current_message": "APP-C-003 started. Creating dummy public link, then polling MDCA Alerts API.",
+            "dummy_file_created": "Starting",
+            "public_link_created": "Starting",
+            "cleanup_status": "Not completed yet",
+            "report_path": None,
+            "html_report_path": None,
+            "error": None,
+            "cancel_requested": False,
+            "powershell_command": command,
+        },
+    )
+
+    system_root = os.environ.get("SystemRoot", r"C:\Windows")
+    user_profile = os.environ.get("USERPROFILE", "")
+    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    win_ps = Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    exe = str(win_ps) if win_ps.exists() else "powershell.exe"
+    module_paths = [
+        Path(user_profile) / "Documents" / "WindowsPowerShell" / "Modules",
+        Path(user_profile) / "Documents" / "PowerShell" / "Modules",
+        Path(program_files) / "WindowsPowerShell" / "Modules",
+        Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "Modules",
+    ]
+    env = os.environ.copy()
+    env["PSModulePath"] = ";".join(str(p) for p in module_paths)
+
+    proc = subprocess.Popen(
+        [exe, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path), *args],
+        cwd=str(project_root),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+    started = time.monotonic()
+    timed_out = False
+    cancelled = False
+
+    while proc.poll() is None:
+        current = load_run(project_root, run_id)
+        if current.get("cancel_requested"):
+            proc.terminate()
+            cancelled = True
+            update_run(
+                project_root,
+                run_id,
+                status="cancelled",
+                phase="Cancelled",
+                verdict="CANCELLED",
+                current_message="APP-C-003 run cancelled from Active Runs.",
+            )
+            break
+        if time.monotonic() - started > timeout:
+            proc.kill()
+            timed_out = True
+            break
+        elapsed = max(0, time.monotonic() - started)
+        attempt = min(max_attempts, max(1, int(elapsed // max(1, poll_interval_seconds)) + 1))
+        progress = min(95, int((attempt / max_attempts) * 100))
+        update_run(
+            project_root,
+            run_id,
+            status="polling",
+            phase="Polling MDCA Alerts API",
+            poll_attempts=attempt,
+            progress_percent=progress,
+            tenant_evidence_status="Waiting",
+            dummy_file_created="Yes",
+            public_link_created="Checking",
+            current_message=f"Polling MDCA Alerts API. Attempt {attempt} of {max_attempts}.",
+        )
+        time.sleep(2)
+
+    try:
+        stdout, stderr = proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate(timeout=10)
+        timed_out = True
+
+    completed = subprocess.CompletedProcess(proc.args, -1 if timed_out else int(proc.returncode or 0), stdout, stderr)
+    if cancelled:
+        return completed, run_id
+
+    if timed_out:
+        update_run(
+            project_root,
+            run_id,
+            status="error",
+            phase="Timeout",
+            verdict="ERROR",
+            error="APP-C-003 exceeded the UI timeout.",
+            current_message="APP-C-003 timed out before completion.",
+        )
+        return completed, run_id
+
+    if completed.returncode != 0:
+        update_run(
+            project_root,
+            run_id,
+            status="error",
+            phase="Error",
+            verdict="ERROR",
+            error=(stderr or stdout or f"PowerShell exited with {completed.returncode}")[-6000:],
+            current_message="APP-C-003 stopped because an error occurred.",
+        )
+        return completed, run_id
+
+    report = _load_json(report_path)
+    if report:
+        _write_html_report(report, html_path)
+    metrics = report.get("metrics", {}) or {}
+    mdca = report.get("mdca_detection_evidence", {}) or {}
+    verdict = _verdict_from_status(report.get("status"))
+    poll_attempts = int(metrics.get("poll_attempts") or mdca.get("poll_attempts") or max_attempts)
+    max_report_attempts = int(metrics.get("max_poll_attempts") or mdca.get("max_poll_attempts") or max_attempts)
+    evidence_found = bool(mdca.get("alert_detected") or mdca.get("governance_remediation_observed"))
+    stopped_early = bool(metrics.get("polling_stopped_early") or mdca.get("polling_stopped_early"))
+    tenant_status = "Found" if evidence_found else "Not found"
+    final_message = (
+        "MDCA evidence found. Polling stopped early and cleanup completed."
+        if evidence_found
+        else f"APP-C-003 completed. Verdict: {verdict or 'Unknown'}."
+    )
+    active_dir = project_root / "powershell" / "Reports" / "ActiveRuns"
+    active_dir.mkdir(parents=True, exist_ok=True)
+    archived_report_path = report_path
+    archived_html_path = html_path
+    if report_path.exists():
+        archived_report_path = active_dir / f"{run_id}-result.json"
+        shutil.copy2(report_path, archived_report_path)
+    if html_path.exists():
+        archived_html_path = active_dir / f"{run_id}-result.html"
+        shutil.copy2(html_path, archived_html_path)
+    update_run(
+        project_root,
+        run_id,
+        status="completed",
+        phase="Completed",
+        verdict=verdict,
+        result_code=report.get("status"),
+        poll_attempts=poll_attempts,
+        max_poll_attempts=max_report_attempts,
+        progress_percent=100,
+        tenant_evidence_status=tenant_status,
+        current_message=final_message,
+        report_path=str(archived_report_path) if archived_report_path.exists() else None,
+        html_report_path=str(archived_html_path) if archived_html_path.exists() else None,
+        completed_utc=utc_now(),
+        cleanup_status=(report.get("cleanup") or {}).get("status"),
+        dummy_file_created="Yes" if report.get("dummy_file") else "Not recorded",
+        public_link_created=metrics.get("public_link_created"),
+        polling_stopped_early=stopped_early,
+        early_stop_reason=metrics.get("early_stop_reason") or mdca.get("early_stop_reason"),
+        detection_method=metrics.get("detection_method") or mdca.get("detection_method"),
+        error=None,
+    )
+    return completed, run_id
 
 
 def _run_powershell(project_root: Path, script_path: Path, args: list[str], timeout: int = 3600) -> subprocess.CompletedProcess:
@@ -174,105 +581,12 @@ def _metric(label: str, value: object, tone: str = "") -> str:
 
 
 def _write_html_report(report: dict, html_path: Path) -> None:
-    html_path.parent.mkdir(parents=True, exist_ok=True)
-
-    metrics = report.get("metrics", {}) or {}
-    site = report.get("site", {}) or {}
-    drive = report.get("drive", {}) or {}
-    dummy = report.get("dummy_file", {}) or {}
-    link = report.get("anonymous_public_link_attempt", {}) or {}
-    mdca = report.get("mdca_detection_evidence", {}) or {}
-    cleanup = report.get("cleanup", {}) or {}
-    warnings = report.get("warnings", []) or []
-    recommendations = report.get("recommendations", []) or []
-    generated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    warnings_html = "".join([f"<li>{_safe(x)}</li>" for x in warnings]) or "<li>No warnings were generated.</li>"
-    recs_html = "".join([f"<li>{_safe(x)}</li>" for x in recommendations]) or "<li>No recommendations generated.</li>"
-
-    html_doc = f"""<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>APP-C-003 - MDCA Public File Sharing Detection Validation</title>
-<style>
-body {{ background:#f4f7fb; color:#0f172a; font-family:Segoe UI,Arial,sans-serif; margin:0; }}
-.container {{ max-width:1180px; margin:32px auto; padding:0 24px; }}
-.hero {{ background:linear-gradient(135deg,#0f172a,#7c3aed); color:white; padding:34px; border-radius:26px; }}
-.metrics {{ display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-top:20px; }}
-.metric,.card {{ background:white; border:1px solid #dbe3ef; border-radius:20px; padding:20px; margin-top:18px; }}
-.metric span {{ color:#64748b; font-size:13px; font-weight:700; }}
-.metric strong {{ display:block; font-size:22px; margin-top:8px; }}
-pre {{ background:#0f172a; color:#e5e7eb; padding:18px; border-radius:16px; overflow:auto; }}
-.footer {{ color:#64748b; font-size:13px; margin-top:24px; }}
-</style>
-</head>
-<body>
-<div class="container">
-<div class="hero">
-<h1>APP-C-003 - MDCA Public File Sharing Detection Validation</h1>
-<p>Applications / Cloud evidence report</p>
-</div>
-
-<div class="metrics">
-<div class="metric"><span>Status</span><strong>{_safe(_friendly_status(report.get("status")))}</strong></div>
-<div class="metric"><span>Risk</span><strong>{_safe(report.get("risk"))}</strong></div>
-<div class="metric"><span>Public Link Created</span><strong>{_safe(metrics.get("public_link_created"))}</strong></div>
-<div class="metric"><span>MDCA Alert Detected</span><strong>{_safe(metrics.get("mdca_alert_detected"))}</strong></div>
-</div>
-
-<div class="card">
-<h2>Executive Summary</h2>
-<p>{_safe(report.get("executive_summary"))}</p>
-<p><b>Final Claim:</b> {_safe(report.get("final_claim"))}</p>
-<p><b>Evidence Quality:</b> {_safe(report.get("evidence_quality"))}</p>
-</div>
-
-<div class="card">
-<h2>Controlled SharePoint Target</h2>
-<p><b>Site:</b> {_safe(site.get("displayName"))}</p>
-<p><b>Site URL:</b> {_safe(site.get("webUrl"))}</p>
-<p><b>Drive:</b> {_safe(drive.get("name"))}</p>
-<p><b>Dummy file:</b> {_safe(dummy.get("file_name"))}</p>
-</div>
-
-<div class="card">
-<h2>Anonymous Public Link Attempt</h2>
-<pre>{_safe(json.dumps(link, indent=2))}</pre>
-</div>
-
-<div class="card">
-<h2>MDCA Detection Evidence</h2>
-<pre>{_safe(json.dumps(mdca, indent=2))}</pre>
-</div>
-
-<div class="card">
-<h2>Cleanup</h2>
-<pre>{_safe(json.dumps(cleanup, indent=2))}</pre>
-</div>
-
-<div class="card">
-<h2>Recommendations</h2>
-<ul>{recs_html}</ul>
-</div>
-
-<div class="card">
-<h2>Warnings</h2>
-<ul>{warnings_html}</ul>
-</div>
-
-<div class="footer">
-Generated by Zero Trust Validation Platform on {generated}. Public URLs are not stored.
-</div>
-</div>
-</body>
-</html>
-"""
-
-    html_path.write_text(html_doc, encoding="utf-8")
+    write_standard_html_report(report, html_path)
 
 
 def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str) -> None:
+    if not html_path.exists():
+        _write_html_report(report, html_path)
     metrics = report.get("metrics", {}) or {}
     site = report.get("site", {}) or {}
     drive = report.get("drive", {}) or {}
@@ -284,96 +598,127 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
 
     status = report.get("status")
     tone = _tone_for_status(status)
+    verdict = _verdict_from_status(status) or "REVIEW"
+    cleanup_completed = (cleanup.get("status") == "Completed") or bool(metrics.get("cleanup_completed"))
+    public_link_created = bool(metrics.get("public_link_created") or link.get("public_link_created"))
+    alert_detected = bool(metrics.get("mdca_alert_detected") or mdca.get("alert_detected"))
+    governance_observed = bool(metrics.get("governance_remediation_observed") or mdca.get("governance_remediation_observed"))
+    stopped_early = bool(metrics.get("polling_stopped_early") or mdca.get("polling_stopped_early"))
+    polls_used = f"{metrics.get('poll_attempts', mdca.get('poll_attempts', 'N/A'))} / {metrics.get('max_poll_attempts', mdca.get('max_poll_attempts', 'N/A'))}"
+    scenario_result = _scenario_result(status, cleanup)
+    detection_method = _first_value(metrics.get("detection_method"), mdca.get("detection_method"), "None")
+    matching_title = _first_value(metrics.get("matching_alert_title"), mdca.get("matching_alert_title"), "")
+    matching_policy = _first_value(metrics.get("matching_policy_name"), mdca.get("matching_policy_name"), "")
+    alert_timestamp = _first_value(metrics.get("alert_timestamp"), mdca.get("alert_timestamp"), "")
+    api_rows_checked = _first_value(metrics.get("mdca_api_rows_checked"), mdca.get("mdca_api_rows_checked"), "Not recorded")
+    matching_fields = metrics.get("matching_fields") or mdca.get("matching_fields") or []
+    if isinstance(matching_fields, list):
+        matching_fields_text = ", ".join(str(item) for item in matching_fields) or "N/A"
+    else:
+        matching_fields_text = str(matching_fields or "N/A")
+    why_matched = _first_value(metrics.get("why_matched"), mdca.get("why_matched"), mdca.get("early_stop_reason"), "N/A")
+
+    explanation = (
+        "ZTVP created a harmless dummy SharePoint public link. MDCA detected the exposure, so the tenant provided detection evidence. Cleanup completed."
+        if verdict == "PASS"
+        else "ZTVP created the harmless dummy public link and cleaned it up, but MDCA did not return matching alert or remediation evidence during the monitoring window."
+    )
 
     _alert("MDCA public file sharing validation completed.", "good" if tone == "good" else tone)
 
-    if status == "PASS_PUBLIC_FILE_EXPOSURE_DETECTED":
-        _alert("Simple result: the public file exposure was created and MDCA detected it automatically.", "good")
-    elif status == "PASS_PUBLIC_FILE_EXPOSURE_REMEDIATED":
-        _alert("Simple result: the public file exposure was created and the public permission disappeared before ZTVP cleanup. This indicates governance/remediation occurred.", "good")
-    elif status == "FAIL_PUBLIC_FILE_EXPOSURE_NOT_DETECTED":
-        _alert("Simple result: the dummy file became public, but no matching MDCA alert/remediation was found. Add or fix the MDCA file policy, then rerun.", "bad")
-    else:
-        _alert("Simple result: ZTVP could not complete a full MDCA detection decision. Review warnings.", "warn")
-
     st.markdown(
         f"""
 <div class="ztvp-grid">
-    {_metric("Status", _friendly_status(status), tone)}
-    {_metric("Risk", report.get("risk", "Unknown"), tone)}
-    {_metric("Public Link Created", metrics.get("public_link_created", False), "bad" if metrics.get("public_link_created") else "warn")}
-    {_metric("MDCA Alert Detected", metrics.get("mdca_alert_detected", False), "good" if metrics.get("mdca_alert_detected") else "warn")}
+    {_metric("Verdict", verdict, tone)}
+    {_metric("Scenario result", scenario_result, "good" if scenario_result == "Detected" else "warn" if scenario_result == "Not detected" else "bad")}
+    {_metric("Public link created", _bool_label(public_link_created), "warn" if public_link_created else "")}
+    {_metric("MDCA alert detected", _bool_label(alert_detected), "good" if alert_detected else "warn")}
+</div>
+<div class="ztvp-grid">
+    {_metric("Governance observed", _bool_label(governance_observed), "good" if governance_observed else "warn")}
+    {_metric("Cleanup completed", _bool_label(cleanup_completed), "good" if cleanup_completed else "bad")}
+    {_metric("Polls used", polls_used)}
+    {_metric("Stopped early", _bool_label(stopped_early), "good" if stopped_early else "")}
 </div>
 """,
         unsafe_allow_html=True,
     )
 
-    st.markdown(
-        f"""
-<div class="ztvp-grid">
-    {_metric("Governance Observed", metrics.get("governance_remediation_observed", False), "good" if metrics.get("governance_remediation_observed") else "warn")}
-    {_metric("Cleanup Completed", metrics.get("cleanup_completed", False), "good" if metrics.get("cleanup_completed") else "bad")}
-    {_metric("Monitoring Window", str(metrics.get("monitoring_window_minutes", "N/A")) + " min")}
-    {_metric("Poll Interval", str(metrics.get("poll_interval_seconds", "N/A")) + " sec")}
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("#### Actual Decision")
-    st.write(report.get("executive_summary", ""))
-    st.caption(report.get("final_claim", ""))
+    st.write(explanation)
 
     st.markdown("#### Controlled SharePoint Target")
     st.markdown(
         f"""
+<div class="ztvp-grid">
+    {_metric("Site name", site.get("displayName", "N/A"))}
+    {_metric("Drive / library", drive.get("name", "N/A"))}
+    {_metric("Dummy file name", dummy.get("file_name", "N/A"))}
+    {_metric("Link type requested", link.get("requested_type", "N/A"))}
+</div>
 <div class="ztvp-grid-3">
-    {_metric("Site", site.get("displayName", "N/A"))}
-    {_metric("Drive", drive.get("name", "N/A"))}
-    {_metric("Dummy File", dummy.get("file_name", "N/A"))}
+    {_metric("Public link created", _bool_label(public_link_created), "warn" if public_link_created else "")}
 </div>
 """,
         unsafe_allow_html=True,
     )
 
-    st.markdown("#### Public Link and MDCA Evidence")
+    st.markdown("#### Detection Evidence")
+    if alert_detected or governance_observed:
+        st.markdown(
+            f"""
+<div class="ztvp-grid">
+    {_metric("Matching alert found", _bool_label(alert_detected or governance_observed), "good")}
+    {_metric("Detection method", detection_method, "good")}
+    {_metric("Matching policy name", matching_policy or "N/A")}
+    {_metric("Matching alert title", matching_title or "N/A")}
+</div>
+<div class="ztvp-grid-3">
+    {_metric("Alert timestamp", alert_timestamp or "N/A")}
+    {_metric("MDCA API rows checked", api_rows_checked)}
+    {_metric("Early stop reason", _first_value(metrics.get("early_stop_reason"), mdca.get("early_stop_reason"), "N/A"))}
+</div>
+<div class="ztvp-grid-3">
+    {_metric("Matching fields", matching_fields_text)}
+    {_metric("Why it matched", why_matched)}
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+    else:
+        _alert("No matching MDCA alert/remediation evidence was returned during the monitoring window.", "warn")
+        st.markdown(
+            f"""
+<div class="ztvp-grid-3">
+    {_metric("Matching alert found", "No", "warn")}
+    {_metric("Detection method", "None")}
+    {_metric("MDCA API rows checked", api_rows_checked)}
+</div>
+""",
+            unsafe_allow_html=True,
+        )
 
-    rows = [
-        {
-            "Evidence": "Anonymous public link",
-            "Value": link.get("public_link_created"),
-            "Detail": link.get("error_message") or "No public URL stored.",
-        },
-        {
-            "Evidence": "MDCA alert",
-            "Value": mdca.get("alert_detected"),
-            "Detail": (mdca.get("matched_alert") or {}).get("title") if isinstance(mdca.get("matched_alert"), dict) else "",
-        },
-        {
-            "Evidence": "Governance/remediation",
-            "Value": mdca.get("governance_remediation_observed"),
-            "Detail": "Public permission removed before cleanup." if mdca.get("governance_remediation_observed") else "",
-        },
-    ]
+    st.markdown("#### Cleanup")
+    anonymous_removed = "Yes" if not mdca.get("permission_still_exists_before_cleanup") and public_link_created else _cleanup_action_status(cleanup, "anonymous")
+    dummy_deleted = _cleanup_action_status(cleanup, "dummy")
+    emergency_needed = "No" if cleanup_completed else "Yes"
+    st.markdown(
+        f"""
+<div class="ztvp-grid">
+    {_metric("Cleanup completed", _bool_label(cleanup_completed), "good" if cleanup_completed else "bad")}
+    {_metric("Anonymous link removed", anonymous_removed)}
+    {_metric("Dummy file/folder deleted", dummy_deleted)}
+    {_metric("Emergency cleanup needed", emergency_needed, "bad" if emergency_needed == "Yes" else "good")}
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-    with st.expander("Anonymous public link attempt details"):
-        st.json(link)
-
-    with st.expander("MDCA automatic detection evidence"):
-        st.json(mdca)
-
-    with st.expander("Cleanup record"):
-        st.json(cleanup)
-
-    if warnings:
-        st.markdown("#### Warnings")
+    if warnings and not cleanup_completed:
         for warning in warnings:
             _alert(str(warning), "warn")
 
     st.markdown("#### Recommendations")
-    for rec in report.get("recommendations", []) or []:
+    for rec in _simple_recommendations():
         st.markdown(f"- {rec}")
 
     st.markdown("#### Export Evidence")
@@ -397,10 +742,18 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
             use_container_width=True,
         )
 
-    with st.expander("View full evidence JSON"):
+    with st.expander("Technical evidence details", expanded=False):
+        st.write(f"run_id: `{report.get('run_id') or 'N/A'}`")
+        st.write(f"tenant_id: `{report.get('tenant_id') or 'N/A'}`")
+        st.write(f"connected account: `{report.get('connected_account') or 'N/A'}`")
+        st.write(f"site ID: `{site.get('id') or 'N/A'}`")
+        st.write(f"drive ID: `{drive.get('id') or 'N/A'}`")
+        st.write(f"file ID: `{dummy.get('file_id') or 'N/A'}`")
+        st.write(f"item/folder ID: `{dummy.get('folder_id') or 'N/A'}`")
+        st.write(f"permission ID: `{link.get('permission_id') or 'N/A'}`")
+        st.write(f"state path: `powershell/Reports/Dynamic/APP-C-003/appc003-state.json`")
+        st.write(f"report path: `{report_path}`")
         st.json(report)
-
-    with st.expander("PowerShell output"):
         st.code(stdout or "No PowerShell output captured.", language="text")
 
 
@@ -430,13 +783,52 @@ def render_appc003_runner(project_root: Path) -> None:
     test_script = project_root / "powershell" / "Engines" / "DynamicValidation" / "Test-ZTVP-APPC003MdcaToken.ps1"
 
     state_path = project_root / "powershell" / "Reports" / "Dynamic" / "APP-C-003" / "appc003-state.json"
+    cleanup_path = project_root / "powershell" / "Reports" / "Dynamic" / "APP-C-003" / "appc003-cleanup-result.json"
     report_path = project_root / "powershell" / "Reports" / "Dynamic" / "APP-C-003-result.json"
-    html_path = project_root / "powershell" / "Reports" / "Dynamic" / "Html" / "APP-C-003-result.html"
+    html_path = project_root / "powershell" / "Reports" / "Dynamic" / "APP-C-003-result.html"
 
-    if state_path.exists():
-        _alert("An active APP-C-003 state exists. Run emergency cleanup before starting a new test.", "warn")
-        with st.expander("View active APP-C-003 state"):
-            st.json(_load_json(state_path))
+    requested_run_id = str(st.session_state.get("ztvp_dynamic_open_run_id") or "")
+    selected_run = selected_run_for_scenario(project_root, "APP-DV-003", requested_run_id)
+    active_run = _latest_appc003_active_run(project_root, requested_run_id)
+    _render_active_run_panel(project_root, active_run)
+    if active_run:
+        return
+
+    if selected_run and str(selected_run.get("status") or "").lower() in {"completed", "cancelled", "error", "timeout", "stale"}:
+        raw_report = str(selected_run.get("report_path") or "").strip()
+        selected_report = Path(raw_report) if raw_report else Path("__missing_appc003_report__.json")
+        selected_html = Path(str(selected_run.get("html_report_path") or selected_report.with_suffix(".html")))
+        if selected_report.exists() and selected_report.is_file():
+            st.markdown("### Selected APP-DV-003 run")
+            _render_report(_load_json(selected_report), selected_report, selected_html, "")
+        else:
+            _alert(f"Selected run is {selected_run.get('status')}, but no report file is available yet.", "warn")
+
+    cleanup_blocks_run, existing_state, cleanup_result = _cleanup_state_blocks_run(state_path, cleanup_path)
+
+    if state_path.exists() and not cleanup_blocks_run:
+        archive_path = _archive_completed_cleanup_state(state_path)
+        _alert("Previous APP-C-003 cleanup completed. You can start a new validation.", "good")
+        if archive_path:
+            st.caption(f"Completed cleanup state was archived: `{archive_path}`")
+        existing_state = {}
+
+    if cleanup_blocks_run:
+        _render_stale_state_panel(state_path, cleanup_path, existing_state)
+        if st.button("Run emergency cleanup now", key="appc003_cleanup_now_top", use_container_width=True):
+            with st.spinner("Running APP-C-003 emergency cleanup..."):
+                completed = _run_powershell(project_root, cleanup_script, [], timeout=1800)
+
+            if completed.returncode != 0:
+                _alert("APP-C-003 emergency cleanup failed. State path is shown above.", "bad")
+                st.code(
+                    f"State path: {state_path}\nReturn code: {completed.returncode}\n\n--- STDERR ---\n{completed.stderr or ''}\n\n--- STDOUT ---\n{completed.stdout or ''}",
+                    language="text",
+                )
+            else:
+                _alert("APP-C-003 emergency cleanup completed. Refreshing so you can start a new run.", "good")
+                st.code(completed.stdout or "No PowerShell output captured.", language="text")
+                st.rerun()
 
     col1, col2 = st.columns(2)
 
@@ -514,10 +906,14 @@ def render_appc003_runner(project_root: Path) -> None:
                     st.code(output_text, language="text")
 
         mdca_policy_name = st.text_input(
-            "Expected MDCA policy name",
-            value="ZTVP - Detect Public SharePoint File Sharing",
+            "Optional policy name filter",
+            value="",
             key="appc003_policy_name",
+            help="Leave empty to let ZTVP accept any MDCA alert matching the dummy public SharePoint exposure. Use this only if you want to restrict matching to one policy.",
+            placeholder="Example: MDCA-P1-M365-SharePoint-PublicSharing-Monitor",
         )
+        st.caption("Leave empty to let ZTVP accept any MDCA alert matching the dummy public SharePoint exposure. Example policy name: MDCA-P1-M365-SharePoint-PublicSharing-Monitor.")
+        _alert("Make sure an MDCA file policy exists to alert on publicly shared SharePoint/OneDrive files.", "info")
 
         with st.expander("Where to get MDCA API URL and token"):
             st.markdown(
@@ -545,6 +941,12 @@ Do **not** paste:
     st.markdown("### 2. Run automatic validation")
 
     if st.button("Run MDCA Public File Sharing Detection Validation", type="primary", use_container_width=True):
+        cleanup_blocks_run, _, _ = _cleanup_state_blocks_run(state_path, cleanup_path)
+        if cleanup_blocks_run:
+            _alert("APP-C-003 did not start because an old cleanup state exists. Run Emergency cleanup first.", "bad")
+            st.caption(f"State file blocking this run: `{state_path}`")
+            return
+
         if site_mode == "Custom site ID" and not custom_site_id.strip():
             _alert("Custom site ID mode requires a site ID.", "warn")
             return
@@ -570,41 +972,39 @@ Do **not** paste:
             "-MdcaPolicyName", mdca_policy_name.strip(),
         ]
 
-        with st.spinner("Creating dummy public link, polling MDCA automatically, and cleaning up test artifacts..."):
-            completed = _run_powershell(project_root, invoke_script, args, timeout=4200)
-
-        if completed.returncode != 0:
-            _alert("APP-C-003 validation failed.", "bad")
-            st.code(
-                f"Return code: {completed.returncode}\n\n--- STDERR ---\n{completed.stderr or ''}\n\n--- STDOUT ---\n{completed.stdout or ''}",
-                language="text",
-            )
-            return
-
-        if not report_path.exists():
-            _alert("Validation completed, but the JSON report was not found.", "warn")
-            st.code(completed.stdout or "No PowerShell output captured.", language="text")
-            return
-
-        report = _load_json(report_path)
-        _write_html_report(report, html_path)
-        _render_report(report, report_path, html_path, completed.stdout)
+        start_scenario_job(
+            project_root,
+            "APP-DV-003",
+            int(monitoring_window),
+            int(poll_interval),
+            extra_args=args,
+            target="Root site" if site_mode == "Root site" else custom_site_id.strip(),
+            tenant="Microsoft 365 tenant",
+        )
+        _alert("APP-DV-003 started in the background. It is now visible in Active Runs and will keep polling if you leave this page.", "good")
+        st.rerun()
 
     st.markdown("### 3. Emergency cleanup")
 
-    if not state_path.exists():
+    cleanup_blocks_run, existing_state, cleanup_result = _cleanup_state_blocks_run(state_path, cleanup_path)
+
+    if not existing_state:
         _alert("No active APP-C-003 cleanup state exists.", "good")
+    elif not cleanup_blocks_run:
+        _alert("Previous APP-C-003 cleanup completed. Emergency cleanup is not required.", "good")
+        with st.expander("Technical evidence details", expanded=False):
+            st.json(cleanup_result)
     else:
         _alert("Emergency cleanup removes the anonymous permission and deletes the dummy folder/file.", "warn")
 
-        if st.button("Run Emergency Cleanup for APP-C-003", use_container_width=True):
+        if st.button("Run emergency cleanup now", key="appc003_cleanup_now_bottom", use_container_width=True):
             with st.spinner("Running APP-C-003 emergency cleanup..."):
                 completed = _run_powershell(project_root, cleanup_script, [], timeout=1800)
 
             if completed.returncode != 0:
-                _alert("APP-C-003 emergency cleanup failed.", "bad")
+                _alert("APP-C-003 emergency cleanup failed. The old state file is still blocking new runs.", "bad")
                 st.code(
-                    f"Return code: {completed.returncode}\n\n--- STDERR ---\n{completed.stderr or ''}\n\n--- STDOUT ---\n{completed.stdout or ''}",
+                    f"State path: {state_path}\nReturn code: {completed.returncode}\n\n--- STDERR ---\n{completed.stderr or ''}\n\n--- STDOUT ---\n{completed.stdout or ''}",
                     language="text",
                 )
             else:

@@ -1,5 +1,6 @@
 param(
-    [string]$ExchangeAdminUPN = ""
+    [string]$ExchangeAdminUPN = "",
+    [string]$StatePathOverride = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -8,6 +9,7 @@ Import-Module Microsoft.Graph.Authentication -ErrorAction Stop
 
 $GraphScopes = @(
     "User.ReadWrite.All",
+    "User.DeleteRestore.All",
     "Directory.ReadWrite.All"
 )
 
@@ -72,7 +74,15 @@ function Test-ZTVPNotFound {
     return (
         $Message -match "404" -or
         $Message -match "not found" -or
+        $Message -match "notfound" -or
+        $Message -match "not found on" -or
         $Message -match "does not exist" -or
+        $Message -match "doesn't exist" -or
+        $Message -match "could not be found" -or
+        $Message -match "couldn't be found" -or
+        $Message -match "introuvable" -or
+        $Message -match "n.existe pas" -or
+        $Message -match "n’existe pas" -or
         $Message -match "ManagementObjectNotFoundException" -or
         $Message -match "ResourceNotFound"
     )
@@ -81,7 +91,14 @@ function Test-ZTVPNotFound {
 $reportRoot = Join-Path (Get-Location) "powershell\Reports\Dynamic"
 $scenarioDir = Join-Path $reportRoot "APP-C-002"
 $historyDir = Join-Path $scenarioDir "history"
-$statePath = Join-Path $scenarioDir "appc002-state.json"
+$defaultStatePath = Join-Path $scenarioDir "appc002-state.json"
+$statePath = $defaultStatePath
+$usingStatePathOverride = -not [string]::IsNullOrWhiteSpace($StatePathOverride)
+
+if ($usingStatePathOverride) {
+    $statePath = $StatePathOverride
+}
+
 $cleanupPath = Join-Path $scenarioDir "appc002-cleanup-result.json"
 
 New-Item -ItemType Directory -Path $historyDir -Force | Out-Null
@@ -112,6 +129,7 @@ $userUpn = [string]$state.decoy_user.user_principal_name
 $skuId = [string]$state.assigned_license.sku_id
 $runId = [string]$state.run_id
 $ruleName = [string]$state.forwarding_artifacts.inbox_rule_name
+$contactName = "ZTVP APP-C-002 External Target $runId"
 
 $actions = @()
 $errors = @()
@@ -178,6 +196,26 @@ if ($module) {
             }
         }
 
+        try {
+            $contact = Get-MailContact -Identity $contactName -ErrorAction Stop
+            Remove-MailContact `
+                -Identity $contact.Identity `
+                -Confirm:$false `
+                -ErrorAction Stop
+
+            $actions += "Removed temporary mail contact: $contactName"
+        }
+        catch {
+            $msg = $_.Exception.Message
+
+            if (Test-ZTVPNotFound -Message $msg) {
+                $actions += "Temporary mail contact was already unavailable."
+            }
+            else {
+                $errors += "Could not remove temporary mail contact: $msg"
+            }
+        }
+
         try { Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue | Out-Null } catch {}
     }
     catch {
@@ -232,18 +270,36 @@ if (-not [string]::IsNullOrWhiteSpace($userId)) {
             $errors += "Decoy user deletion failed: $msg"
         }
     }
+
+    try {
+        Start-Sleep -Seconds 3
+        Invoke-MgGraphRequest -Method DELETE -Uri "https://graph.microsoft.com/v1.0/directory/deletedItems/$userId" | Out-Null
+        $actions += "Permanently deleted decoy user from Entra deleted users: $userUpn"
+    }
+    catch {
+        $msg = $_.Exception.Message
+
+        if (Test-ZTVPNotFound -Message $msg) {
+            $actions += "Decoy user was not present in Entra deleted users."
+        }
+        else {
+            $errors += "Permanent deleted-user purge failed: $msg"
+        }
+    }
 }
 
 $status = if ($errors.Count -eq 0) { "Completed" } else { "Failed" }
 
-$archivePath = Join-Path $historyDir "appc002-state-$runId.json"
+$archivePath = if ($usingStatePathOverride) { $statePath } else { Join-Path $historyDir "appc002-state-$runId.json" }
 
-try {
-    $state | ConvertTo-Json -Depth 100 | Set-Content -Path $archivePath -Encoding UTF8
+if (-not $usingStatePathOverride) {
+    try {
+        $state | ConvertTo-Json -Depth 100 | Set-Content -Path $archivePath -Encoding UTF8
+    }
+    catch {}
 }
-catch {}
 
-if ($status -eq "Completed") {
+if ($status -eq "Completed" -and -not $usingStatePathOverride) {
     Remove-Item $statePath -Force -ErrorAction SilentlyContinue
 }
 
@@ -254,7 +310,8 @@ $result = [PSCustomObject]@{
     cleanup_status = $status
     actions = @($actions)
     errors = @($errors)
-    state_file_deleted = (-not (Test-Path $statePath))
+    state_file_deleted = (-not (Test-Path $defaultStatePath))
+    used_state_path = $statePath
 }
 
 Write-ZTVPJson -Path $cleanupPath -Object $result
