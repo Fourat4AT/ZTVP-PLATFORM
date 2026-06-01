@@ -1,6 +1,10 @@
 param(
     [string]$ObservedOutcome = "NOT_RECORDED",
-    [int]$LookbackMinutes = 240
+    [int]$LookbackMinutes = 240,
+    [int]$LogPropagationWaitSeconds = 30,
+    [int]$TotalEvidenceSearchTimeSeconds = 300,
+    [int]$PollIntervalSeconds = 20,
+    [string]$RunId = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -296,9 +300,38 @@ Write-Host ""
 
 $startUtcDate = (Get-Date).ToUniversalTime().AddMinutes(-1 * $LookbackMinutes)
 
-Start-Sleep -Seconds 8
+if ($LogPropagationWaitSeconds -gt 0) {
+    Write-Host "Waiting $LogPropagationWaitSeconds seconds for Microsoft Graph log/grant propagation..."
+    Start-Sleep -Seconds $LogPropagationWaitSeconds
+}
 
-$grants = @(Get-ZTVPOAuthPermissionGrants -ServicePrincipalId $servicePrincipalId -UserId $targetUserId)
+$pollInterval = [Math]::Max(1, $PollIntervalSeconds)
+$totalSearch = [Math]::Max(1, $TotalEvidenceSearchTimeSeconds)
+$maxPolls = [Math]::Max(1, [int][Math]::Ceiling($totalSearch / $pollInterval))
+$pollsUsed = 0
+$pollingStoppedEarly = $false
+$lastPollUtc = $null
+$grants = @()
+$deadline = (Get-Date).ToUniversalTime().AddSeconds($totalSearch)
+
+while ((Get-Date).ToUniversalTime() -le $deadline -and $pollsUsed -lt $maxPolls) {
+    $pollsUsed++
+    $lastPollUtc = (Get-Date).ToUniversalTime().ToString("o")
+    Write-Host "Poll $pollsUsed/$maxPolls - querying Microsoft Graph oauth2PermissionGrant for controlled test app..."
+    $grants = @(Get-ZTVPOAuthPermissionGrants -ServicePrincipalId $servicePrincipalId -UserId $targetUserId)
+
+    if ($grants.Count -gt 0) {
+        $pollingStoppedEarly = $true
+        Write-Host "Microsoft Graph found an oauth2PermissionGrant for the controlled test app."
+        break
+    }
+
+    Write-Host "Microsoft Graph found 0 oauth2PermissionGrant objects for the controlled test app."
+    if ($pollsUsed -lt $maxPolls -and (Get-Date).ToUniversalTime().AddSeconds($pollInterval) -le $deadline) {
+        Start-Sleep -Seconds $pollInterval
+    }
+}
+
 $directoryAudits = @(Get-ZTVPDirectoryAuditEvidence -StartUtcDate $startUtcDate -AppId $appId -AppDisplayName $appDisplayName -UserPrincipalName $targetUpn)
 $signIns = @(Get-ZTVPSignInEvidence -StartUtcDate $startUtcDate -UserPrincipalName $targetUpn)
 $authorizationPolicy = Get-ZTVPAuthorizationPolicy
@@ -306,52 +339,44 @@ $authorizationPolicy = Get-ZTVPAuthorizationPolicy
 $grantCreated = ($grants.Count -gt 0)
 $observedBlocked = ($ObservedOutcome -eq "ADMIN_APPROVAL_REQUIRED" -or $ObservedOutcome -eq "CONSENT_BLOCKED")
 $observedAccepted = ($ObservedOutcome -eq "USER_ACCEPTED_CONSENT")
-$observedInterrupted = ($ObservedOutcome -eq "SIGNIN_INTERRUPTED")
 
 $warnings = @()
 $evidenceQuality = "Unknown"
+$tenantProofText = if ($grantCreated) {
+    "Microsoft Graph found an oauth2PermissionGrant for the controlled test app."
+}
+else {
+    "Microsoft Graph found 0 oauth2PermissionGrant objects for the controlled test app after the selected evidence search time."
+}
 
 if ($grantCreated) {
     $status = "FAIL_USER_CONSENT_ALLOWED"
     $risk = "MEDIUM"
-    $evidenceQuality = "Strong - OAuth grant exists"
+    $evidenceQuality = "Strong - tenant OAuth grant exists"
     $summary = "A delegated OAuth permission grant was created for the controlled ZTVP test application."
     $finalClaim = "A standard decoy user was able to grant OAuth delegated permissions to the test application. User consent exposure exists for the tested scope."
 }
 elseif ($observedBlocked) {
     $status = "PASS_USER_CONSENT_BLOCKED"
     $risk = "LOW"
-    $evidenceQuality = "Strong - Browser outcome plus no OAuth grant"
+    $evidenceQuality = "Strong - tenant grant absent plus manual blocked/admin approval observation"
     $summary = "No OAuth permission grant was created and the observed browser outcome indicated consent was blocked or administrator approval was required."
     $finalClaim = "The tenant prevented the standard decoy user from granting OAuth permissions to the controlled test application."
-}
-elseif ($observedInterrupted) {
-    $status = "PARTIAL_SIGNIN_INTERRUPTED"
-    $risk = "MEDIUM"
-    $evidenceQuality = "Partial"
-    $summary = "No OAuth permission grant was created, but the consent decision was not reached because sign-in or registration was interrupted."
-    $finalClaim = "This run did not prove user-consent enforcement because the decoy user did not complete the consent decision path."
 }
 elseif ($observedAccepted -and -not $grantCreated) {
     $status = "PARTIAL_ACCEPTED_BUT_NO_GRANT_FOUND"
     $risk = "MEDIUM"
-    $evidenceQuality = "Partial / inconsistent"
+    $evidenceQuality = "Partial / conflicting tenant and manual evidence"
     $summary = "The browser outcome was recorded as accepted, but Microsoft Graph did not show an OAuth permission grant for the test app."
     $finalClaim = "The run is inconsistent. Wait a few minutes and collect evidence again before drawing a conclusion."
-}
-elseif ($signIns.Count -gt 0 -or $directoryAudits.Count -gt 0) {
-    $status = "PASS_NO_OAUTH_GRANT_CREATED"
-    $risk = "LOW"
-    $evidenceQuality = "Moderate - telemetry exists and no grant exists"
-    $summary = "The decoy user produced telemetry, but no OAuth permission grant was created for the test app."
-    $finalClaim = "The controlled test app did not receive delegated OAuth permissions from the decoy user."
+    $warnings += "Manual browser observation says consent was accepted, but tenant evidence found no oauth2PermissionGrant for the controlled test app."
 }
 else {
-    $status = "PARTIAL_NO_ATTEMPT_EVIDENCE"
+    $status = "PARTIAL_NO_OAUTH_GRANT_BROWSER_UNKNOWN"
     $risk = "MEDIUM"
-    $evidenceQuality = "Partial"
-    $summary = "No OAuth permission grant was found, but ZTVP also did not find clear sign-in or audit evidence for the consent attempt."
-    $finalClaim = "No grant was created, but the run cannot prove that the consent flow was actually completed or blocked."
+    $evidenceQuality = "Partial - tenant grant absent but manual browser outcome is not decisive"
+    $summary = "Microsoft Graph did not show an OAuth permission grant for the test app, but the browser outcome was not a clear blocked/admin approval result."
+    $finalClaim = "No grant was created, but the run cannot prove a PASS because the manual browser observation was unknown or inconclusive."
 }
 
 if (-not $grantCreated -and $signIns.Count -eq 0) {
@@ -372,6 +397,7 @@ $result = [PSCustomObject]@{
     pillar = "Identity"
     scope = "Cloud"
     generated_at = (Get-Date).ToString("s")
+    run_id = $RunId
     tenant_id = $ctx.TenantId
     connected_account = $ctx.Account
 
@@ -388,6 +414,9 @@ $result = [PSCustomObject]@{
     warnings = @($warnings)
 
     observed_browser_outcome = $ObservedOutcome
+    browser_outcome_label = "Manual browser observation"
+    tenant_proof_text = $tenantProofText
+    tenant_evidence_source = "Microsoft Graph oauth2PermissionGrant query"
 
     decoy_user = [PSCustomObject]@{
         id = $targetUserId
@@ -412,9 +441,17 @@ $result = [PSCustomObject]@{
     metrics = [PSCustomObject]@{
         oauth_grant_created = $grantCreated
         oauth_grant_count = $grants.Count
+        grant_count = $grants.Count
         directory_audit_evidence_count = $directoryAudits.Count
         sign_in_evidence_count = $signIns.Count
         lookback_minutes = $LookbackMinutes
+        log_propagation_wait_seconds = $LogPropagationWaitSeconds
+        total_evidence_search_time_seconds = $TotalEvidenceSearchTimeSeconds
+        poll_interval_seconds = $pollInterval
+        poll_attempts = $pollsUsed
+        max_poll_attempts = $maxPolls
+        polling_stopped_early = $pollingStoppedEarly
+        last_poll_utc = $lastPollUtc
     }
 }
 
@@ -434,6 +471,7 @@ Write-Host "Risk: $risk"
 Write-Host "Evidence quality: $evidenceQuality"
 Write-Host "OAuth grant created: $grantCreated"
 Write-Host "OAuth grants found: $($grants.Count)"
+Write-Host "Tenant proof: $tenantProofText"
 Write-Host "Directory audit rows: $($directoryAudits.Count)"
 Write-Host "Sign-in evidence rows: $($signIns.Count)"
 Write-Host "Report saved to: $reportPath"

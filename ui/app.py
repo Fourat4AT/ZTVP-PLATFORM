@@ -2763,9 +2763,7 @@ elif page == "Reports":
                     "Target site": (cld_site.get("displayName") or cld_site.get("webUrl") or "") if is_cld001 else "",
                     "Anonymous link created": ("Yes" if cld_metrics.get("anonymous_link_created") or cld_attempt.get("link_created") else "No") if is_cld001 else "",
                     "Link blocked": ("Yes" if cld_metrics.get("anonymous_link_denied") or cld_attempt.get("link_denied") else "No") if is_cld001 else "",
-                    "Guest invitation result": (
-                        "Succeeded" if report.get("guest_invitation_succeeded") else "Blocked/Denied" if report.get("tenant_blocked_invite") else "Attempted" if report.get("guest_invitation_attempted") else ""
-                    ) if is_idc005 else "",
+                    "Latest portal result": ((report.get("metrics") or {}).get("latest_admin_portal_attempt_result") or "") if is_idc005 else "",
                     "Graph status": report.get("graph_connection_status") if is_idc005 else "",
                     "Tenant evidence": (
                         "Found"
@@ -2799,7 +2797,7 @@ elif page == "Reports":
                     attempt = report.get("anonymous_link_attempt") or {}
                     extra = f" | Anonymous link created: {'Yes' if metrics.get('anonymous_link_created') or attempt.get('link_created') else 'No'} | Link blocked: {'Yes' if metrics.get('anonymous_link_denied') or attempt.get('link_denied') else 'No'}"
                 if str(report.get("display_id") or report.get("scenario_id") or "").upper() in {"ID-DV-005", "ID-C-005"}:
-                    extra = f" | Guest invitation: {'Succeeded' if report.get('guest_invitation_succeeded') else 'Blocked/Denied' if report.get('tenant_blocked_invite') else 'Attempted' if report.get('guest_invitation_attempted') else 'Not attempted'} | Graph: {report.get('graph_connection_status') or 'Unknown'}"
+                    extra = f" | Latest portal result: {(report.get('metrics') or {}).get('latest_admin_portal_attempt_result') or 'PENDING'} | Graph: {report.get('graph_connection_status') or 'Unknown'}"
                 st.caption(f"Verdict: {report_verdict(report)} | Risk: {report.get('risk') or 'Unknown'} | Completed: {report.get('completed_utc') or report.get('generated_utc') or report.get('generated_at') or 'Not recorded'}{extra}")
                 col_html, col_json = st.columns(2)
                 with col_html:

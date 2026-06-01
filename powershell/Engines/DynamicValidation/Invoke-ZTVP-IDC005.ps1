@@ -6,6 +6,12 @@ param(
 
     [int]$EvidenceWaitSeconds = 60,
 
+    [int]$TotalEvidenceSearchTimeSeconds = 300,
+
+    [int]$PollIntervalSeconds = 20,
+
+    [int]$LogPropagationWaitSeconds = 60,
+
     [string]$EvidenceStartUtc = ""
 )
 
@@ -189,7 +195,7 @@ function New-ZTVPSignInUri {
     param([string]$Filter)
 
     $encodedFilter = [System.Uri]::EscapeDataString($Filter)
-    return "https://graph.microsoft.com/v1.0/auditLogs/signIns?`$top=1000&`$filter=$encodedFilter"
+    return "https://graph.microsoft.com/v1.0/auditLogs/signIns?`$top=1000&`$orderby=createdDateTime desc&`$filter=$encodedFilter"
 }
 
 function Escape-ZTVPODataString {
@@ -420,12 +426,34 @@ function Convert-ZTVPPolicyEvidence {
 
         $policyText = "$policyName $policyResult $($grantControls -join ' ') $($sessionControls -join ' ')"
         $resultLower = $policyResult.Trim().ToLowerInvariant()
+        $grantText = ($grantControls -join ",")
 
         $treatAsBlocking = (
             $resultLower -match "failure|block|denied" -or
-            (($grantControls -join ",") -match "block|Block") -or
+            ($grantText -match "block|Block") -or
             ($resultLower -match "notapplied" -and $policyText -match "block|Block|failure|Failure")
         )
+
+        $classification = "Not applied"
+
+        if ($resultLower -match "^reportonly") {
+            $classification = "Report-only match"
+        }
+        elseif ($resultLower -match "notapplied") {
+            $classification = "Not applied"
+        }
+        elseif ($resultLower -match "failure" -and $grantText -match "block|Block") {
+            $classification = "Enforced block"
+        }
+        elseif ($resultLower -match "failure" -and $grantText -match "mfa|Mfa|RequireCompliantDevice|compliant|TermsOfUse|terms|approvedApplication|appProtection") {
+            $classification = "Authentication interruption"
+        }
+        elseif ($resultLower -match "failure|interrupted") {
+            $classification = "Authentication interruption"
+        }
+        elseif ($resultLower -match "success") {
+            $classification = "Applied"
+        }
 
         if ($treatAsBlocking -and -not [string]::IsNullOrWhiteSpace($policyName)) {
             $blockingPolicyNames += $policyName
@@ -436,6 +464,8 @@ function Convert-ZTVPPolicyEvidence {
             result = $policyResult
             enforcedGrantControls = @($grantControls)
             enforcedSessionControls = @($sessionControls)
+            grantControls = @($grantControls)
+            classification = $classification
             treatedAsBlocking = $treatAsBlocking
         }
     }
@@ -481,13 +511,12 @@ function Convert-ZTVPGuestSignInEvidence {
         $policyEvidence = Convert-ZTVPPolicyEvidence -Policies $policies
 
         $appResource = "$app $resource"
-        $appContainsPortal = ($app -match "Azure Portal|Azure Portal Fx")
+        $portalPattern = "Azure Portal|Azure Resource Manager|Microsoft Admin Portals|Entra admin center|Microsoft Entra admin center|Microsoft 365 admin center|Microsoft Azure Management|Windows Azure Service Management API|Azure Portal Fx"
+        $appContainsPortal = ($app -match $portalPattern)
         $resourceIsGraph = ($resource -match "^Microsoft Graph$")
 
         $isAdminPortal = (
-            $appResource -match "Azure Portal" -or
-            $appResource -match "Azure Portal Fx" -or
-            $appResource -match "Azure Resource Manager" -or
+            $appResource -match $portalPattern -or
             $appResource -match "AzureCopilotServiceProd" -or
             ($appContainsPortal -and $resourceIsGraph)
         )
@@ -510,7 +539,7 @@ function Convert-ZTVPGuestSignInEvidence {
         $statusCodeText = ([string]$statusCode).Trim()
         $statusCodeIsZero = (-not [string]::IsNullOrWhiteSpace($statusCodeText) -and $statusCodeText -eq "0")
         $statusCodeNonZero = (-not [string]::IsNullOrWhiteSpace($statusCodeText) -and $statusCodeText -ne "0")
-        $success = ($statusCodeIsZero -or $statusText -match "Success" -or $caStatus -match "^success$")
+        $success = ($statusCodeIsZero -and $caStatus -match "^success$")
 
         $blockedOrInterruptedSignal = (
             $statusCodeNonZero -or
@@ -602,6 +631,7 @@ function Copy-ZTVPLatestAttempt {
         conditionalAccessStatus = $Row.conditionalAccessStatus
         appliedPolicyNames = @($Row.appliedPolicyNames)
         blockingPolicyNames = @($Row.blockingPolicyNames)
+        appliedConditionalAccessPolicies = @($Row.appliedConditionalAccessPolicies)
         ipAddress = $Row.ipAddress
         matchedIdentifier = $Row.matchedIdentifier
         resultCategory = $Row.resultCategory
@@ -663,9 +693,18 @@ Write-Host "Decision evidence start UTC: $(Format-ZTVPDateTimeUtc -Value $decisi
 Write-Host "Collection start UTC: $(Format-ZTVPDateTimeUtc -Value $collectionStart)"
 Write-Host ""
 
-$waitSafe = [Math]::Max(0, $EvidenceWaitSeconds)
-$deadline = (Get-Date).AddSeconds($waitSafe)
-$pollInterval = 15
+$totalSearchSafe = [Math]::Max(1, $TotalEvidenceSearchTimeSeconds)
+$pollInterval = [Math]::Max(1, $PollIntervalSeconds)
+$logPropagationWaitSafe = [Math]::Max(0, $LogPropagationWaitSeconds)
+$maxPolls = [Math]::Max(1, [int][Math]::Ceiling($totalSearchSafe / $pollInterval))
+$pollStartedUtc = [DateTimeOffset]::UtcNow
+
+if ($logPropagationWaitSafe -gt 0) {
+    Write-Host "Waiting for Entra log propagation... $logPropagationWaitSafe seconds"
+    Start-Sleep -Seconds $logPropagationWaitSafe
+}
+
+$searchDeadline = (Get-Date).AddSeconds($totalSearchSafe)
 $pollNumber = 0
 
 $rawSignIns = @()
@@ -676,13 +715,10 @@ $invitationEvidence = @()
 $historicalPortalEvidence = @()
 $polls = @()
 
-do {
-    if ($pollNumber -gt 0) {
-        Start-Sleep -Seconds $pollInterval
-    }
-
+while ($pollNumber -lt $maxPolls -and (Get-Date) -lt $searchDeadline) {
     $pollNumber++
-    Write-Host "Polling Entra sign-in logs... poll $pollNumber"
+    Write-Host "Searching Entra sign-in logs..."
+    Write-Host "Poll $pollNumber/$maxPolls"
 
     $rawSignIns = @(Get-ZTVPSignInsSince -StartUtcDate $collectionStart -ExternalEmail $externalEmail -GuestUpn $guestUpn -GuestUserId $guestUserId)
     $allMatchedEvidence = @(Convert-ZTVPGuestSignInEvidence -SignIns $rawSignIns -ExternalEmail $externalEmail -GuestUpn $guestUpn -GuestUserId $guestUserId)
@@ -716,10 +752,18 @@ do {
     }
 
     if ($adminPortalEvidence.Count -gt 0) {
+        Write-Host "Fresh portal attempt found"
         break
     }
+
+    Write-Host "Poll $pollNumber/$maxPolls`: no fresh portal attempt found yet"
+    if ($pollNumber -lt $maxPolls) {
+        $remainingSeconds = [int][Math]::Floor(($searchDeadline - (Get-Date)).TotalSeconds)
+        if ($remainingSeconds -gt 0) {
+            Start-Sleep -Seconds ([Math]::Min($pollInterval, $remainingSeconds))
+        }
+    }
 }
-while ((Get-Date) -lt $deadline)
 
 $guestFresh = Get-ZTVPGuestUserFresh -UserId $guestUserId
 $guestExternalState = $null
@@ -771,20 +815,20 @@ $allPolicyNames = @(
     Sort-Object -Unique
 )
 
-$policyRows = @(
-    $blockedAdminEvidence |
-    ForEach-Object {
-        [PSCustomObject]@{
-            createdDateTimeUtc = $_.createdDateTimeUtc
-            appDisplayName = $_.appDisplayName
-            resourceDisplayName = $_.resourceDisplayName
-            resultCategory = $_.resultCategory
-            appliedPolicyNames = @($_.appliedPolicyNames)
-            blockingPolicyNames = @($_.blockingPolicyNames)
-            conditionalAccessStatus = $_.conditionalAccessStatus
+$policyRows = @()
+
+if ($latestAdminPortalAttempt) {
+    foreach ($policy in @($latestAdminPortalAttempt.appliedConditionalAccessPolicies)) {
+        if ($null -eq $policy) { continue }
+
+        $policyRows += [PSCustomObject]@{
+            policy_control_name = [string](Get-ZTVPValue -Object $policy -Name "displayName")
+            result = [string](Get-ZTVPValue -Object $policy -Name "result")
+            grant_controls = @((ConvertTo-ZTVPArray (Get-ZTVPValue -Object $policy -Name "enforcedGrantControls")))
+            classification = [string](Get-ZTVPValue -Object $policy -Name "classification")
         }
     }
-)
+}
 
 $warnings = @()
 $browserReached = ($ObservedOutcome -eq "REACHED_ADMIN_PORTAL")
@@ -807,76 +851,35 @@ if ($adminPortalEvidence.Count -eq 0 -and ($ObservedOutcome -eq "AUTO_DETECT" -o
 }
 
 $status = "PARTIAL_NO_ADMIN_PORTAL_TELEMETRY"
-$risk = "MEDIUM"
+$risk = "UNKNOWN"
 $evidenceQuality = "Partial - no admin portal telemetry found"
-$summary = "No matching Azure/admin portal telemetry was found for this guest in the active decision window."
-$finalClaim = "This run cannot prove whether guest admin portal access was blocked or allowed without admin portal telemetry or a browser-observed allow/block outcome."
+$summary = "PARTIAL: No fresh admin/management portal sign-in was found before the selected timeout."
+$finalClaim = "PARTIAL: No fresh admin/management portal sign-in was found before the selected timeout. Increase total search time or retry after the portal attempt."
 $actualDecision = $finalClaim
 
 if ($latestAdminPortalAttempt -and $latestAdminPortalAttempt.resultCategory -eq "SUCCESS") {
     $status = "FAIL_GUEST_ADMIN_PORTAL_ALLOWED"
     $risk = "HIGH"
     $evidenceQuality = "Strong - successful admin portal sign-in telemetry"
-    $summary = "The latest matching Azure/admin portal attempt succeeded."
-    $finalClaim = "The external guest reached Azure/admin portal. Guest admin portal access was not blocked for this attempt."
+    $summary = "FAIL: The external guest reached $($latestAdminPortalAttempt.appDisplayName) / $($latestAdminPortalAttempt.resourceDisplayName) successfully inside the fresh validation window."
+    $finalClaim = "FAIL: The external guest reached $($latestAdminPortalAttempt.appDisplayName) / $($latestAdminPortalAttempt.resourceDisplayName) successfully inside the fresh validation window. This indicates a policy gap."
     $actualDecision = $finalClaim
 }
 elseif ($latestAdminPortalAttempt -and $latestAdminPortalAttempt.resultCategory -eq "BLOCKED_OR_INTERRUPTED") {
-    if ($browserReached) {
-        $status = "PARTIAL_CONFLICT_BROWSER_REACHED_TELEMETRY_BLOCKED"
-        $risk = "HIGH"
-        $evidenceQuality = "Conflicting - browser observation disagrees with latest telemetry"
-        $summary = "The consultant recorded that the guest reached Azure/admin portal, but the latest matching Entra admin portal telemetry is blocked or interrupted."
-        $finalClaim = "The consultant recorded that the guest reached Azure/admin portal, but the latest matching Entra admin portal telemetry is blocked or interrupted. This requires retest with a fresh window."
-        $actualDecision = $finalClaim
-        $warnings += "Browser observation conflicts with Entra admin portal telemetry. Start a fresh retest window and repeat the exact portal attempt."
-    }
-    else {
-        $status = "PASS_LATEST_GUEST_ATTEMPT_BLOCKED_OR_INTERRUPTED"
-        $risk = "LOW"
-        $evidenceQuality = "Strong - latest admin portal sign-in telemetry blocked/interrupted"
-        $summary = "The latest matching Azure/admin portal attempt was blocked or interrupted."
-        $finalClaim = "The latest guest attempt did not reach Azure/admin portal. The tenant blocked or interrupted the admin portal access path."
-        $actualDecision = $finalClaim
-    }
+    $status = "PASS_LATEST_GUEST_ATTEMPT_BLOCKED_OR_INTERRUPTED"
+    $risk = "LOW"
+    $evidenceQuality = "Strong - latest admin portal sign-in telemetry blocked/interrupted"
+    $summary = "PASS: The external guest did not reach the admin/management portal."
+    $finalClaim = "PASS: The external guest did not reach the admin/management portal. The latest fresh sign-in attempt to $($latestAdminPortalAttempt.appDisplayName) / $($latestAdminPortalAttempt.resourceDisplayName) was blocked or interrupted."
+    $actualDecision = $finalClaim
 }
 elseif ($adminPortalEvidence.Count -eq 0) {
-    if ($browserReached) {
-        $status = "FAIL_BROWSER_OBSERVED_TELEMETRY_PENDING"
-        $risk = "HIGH"
-        $evidenceQuality = "Browser-observed, telemetry pending"
-        $summary = "The consultant recorded that the guest reached Azure/admin portal, but matching Entra admin portal telemetry has not appeared yet."
-        $finalClaim = "The consultant observed guest access to Azure/admin portal. Treat this as an insecure result unless a fresh retest proves otherwise."
-        $actualDecision = $finalClaim
-    }
-    elseif ($browserBlockedOrInterrupted) {
-        $status = "PARTIAL_BROWSER_BLOCKED_TELEMETRY_PENDING"
-        $risk = "MEDIUM"
-        $evidenceQuality = "Browser-observed block, telemetry pending"
-        $summary = "The browser outcome was blocked or interrupted, but matching Azure/admin portal telemetry was not found yet."
-        $finalClaim = "The browser suggested a block/interruption, but this run needs Entra admin portal telemetry for a strong PASS."
-        $actualDecision = $finalClaim
-    }
-    else {
-        $status = "PARTIAL_NO_ADMIN_PORTAL_TELEMETRY"
-        $risk = "MEDIUM"
-        $evidenceQuality = "Partial - no admin portal telemetry found"
-
-        if ($ObservedOutcome -eq "INVITATION_NOT_REDEEMED" -or $guestExternalState -eq "PendingAcceptance") {
-            $summary = "The guest invitation does not appear to have completed, and no Azure/admin portal telemetry was found."
-            $finalClaim = "This run cannot prove guest admin portal enforcement because the external guest did not complete the invitation and portal access path."
-        }
-        elseif ($invitationEvidence.Count -gt 0) {
-            $summary = "Invitation evidence was found, but no Azure/admin portal access telemetry was found."
-            $finalClaim = "The guest reached the invitation/redemption flow, but this run did not prove whether Azure/admin portal access was blocked or allowed."
-        }
-        else {
-            $summary = "No matching Azure/admin portal telemetry was found for this guest in the active decision window."
-            $finalClaim = "The run cannot prove guest admin portal enforcement without a guest Azure/admin portal sign-in attempt or browser-observed outcome."
-        }
-
-        $actualDecision = $finalClaim
-    }
+    $status = "PARTIAL_NO_ADMIN_PORTAL_TELEMETRY"
+    $risk = "UNKNOWN"
+    $evidenceQuality = "Partial - no fresh admin/management portal telemetry found"
+    $summary = "PARTIAL: No fresh admin/management portal sign-in was found before the selected timeout."
+    $finalClaim = "PARTIAL: No fresh admin/management portal sign-in was found before the selected timeout. Increase total search time or retry after the portal attempt."
+    $actualDecision = $finalClaim
 }
 
 $matchedByExternalEmailCount = @($decisionEvidence | Where-Object { $_.matchedIdentifiers -contains "externalEmail" }).Count
@@ -899,6 +902,14 @@ $metrics = [PSCustomObject]@{
     evidence_start_utc = Format-ZTVPDateTimeUtc -Value $decisionStart
     evidence_start_mode = $evidenceStartMode
     evidence_poll_count = $polls.Count
+    poll_attempts = $polls.Count
+    max_poll_attempts = $maxPolls
+    total_evidence_search_time_seconds = $totalSearchSafe
+    poll_interval_seconds = $pollInterval
+    log_propagation_wait_seconds = $logPropagationWaitSafe
+    last_poll_utc = if ($polls.Count -gt 0) { $polls[-1].checked_at_utc } else { $null }
+    matching_signin_found = ($null -ne $latestAdminPortalAttempt)
+    tenant_evidence_found = ($null -ne $latestAdminPortalAttempt -or $adminPortalEvidence.Count -gt 0)
     raw_signins_queried = $rawSignIns.Count
     lookback_minutes = $LookbackMinutes
     evidence_wait_seconds = $EvidenceWaitSeconds
@@ -910,8 +921,12 @@ $result = [PSCustomObject]@{
     pillar = "Identity"
     scope = "Cloud"
     generated_at = (Get-Date).ToString("s")
+    started_utc = Format-ZTVPDateTimeUtc -Value $pollStartedUtc
+    validation_start_utc = Format-ZTVPDateTimeUtc -Value $decisionStart
     tenant_id = $ctx.TenantId
     connected_account = $ctx.Account
+    target = $externalEmail
+    target_app = if ($latestAdminPortalAttempt) { "$($latestAdminPortalAttempt.appDisplayName) / $($latestAdminPortalAttempt.resourceDisplayName)" } else { "Admin/management portal" }
 
     control_tested = "External or guest users should not be able to access Azure/admin portals unless explicitly allowed."
     expected_result = "The guest admin portal access attempt should be blocked by Conditional Access or platform controls."
@@ -965,6 +980,8 @@ $result = [PSCustomObject]@{
         blocked_admin_portal_evidence_count = $blockedAdminEvidence.Count
         policy_rows = @($policyRows)
     }
+
+    policy_control_table = @($policyRows)
 
     metrics = $metrics
     evidence_polling = @($polls)

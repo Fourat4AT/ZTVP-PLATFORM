@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 import os
+import queue
+import re
 import shutil
 import subprocess
 import threading
@@ -30,6 +32,22 @@ SCENARIOS = {
         "local_evidence": Path("powershell") / "Reports" / "Dynamic" / "ID-C-001" / "decoy-state.json",
         "report": Path("powershell") / "Reports" / "Dynamic" / "ID-C-001-result.json",
         "html": Path("powershell") / "Reports" / "Dynamic" / "Html" / "ID-C-001-result.html",
+    },
+    "ID-DV-002": {
+        "name": "Device Code Flow Block Validation",
+        "script": Path("powershell") / "Engines" / "DynamicValidation" / "Invoke-ZTVP-IDC002.ps1",
+        "state": Path("powershell") / "Reports" / "Dynamic" / "ID-C-002" / "decoy-state.json",
+        "local_evidence": Path("powershell") / "Reports" / "Dynamic" / "ID-C-002" / "decoy-state.json",
+        "report": Path("powershell") / "Reports" / "Dynamic" / "ID-C-002-result.json",
+        "html": Path("powershell") / "Reports" / "Dynamic" / "Html" / "ID-C-002-result.html",
+    },
+    "ID-DV-003": {
+        "name": "Controlled Legacy Authentication Exposure Validation",
+        "script": Path("powershell") / "Engines" / "DynamicValidation" / "Invoke-ZTVP-IDC003.ps1",
+        "state": Path("powershell") / "Reports" / "Dynamic" / "ID-C-003" / "decoy-state.json",
+        "local_evidence": Path("powershell") / "Reports" / "Dynamic" / "ID-C-003" / "decoy-state.json",
+        "report": Path("powershell") / "Reports" / "Dynamic" / "ID-C-003-result.json",
+        "html": Path("powershell") / "Reports" / "Dynamic" / "Html" / "ID-C-003-result.html",
     },
     "DEV-DV-001": {
         "name": "Unmanaged Device Cloud Access Probe",
@@ -95,6 +113,14 @@ SCENARIOS = {
         "report": Path("powershell") / "Reports" / "Dynamic" / "ID-C-005-result.json",
         "html": Path("powershell") / "Reports" / "Dynamic" / "Html" / "ID-C-005-result.html",
     },
+    "ID-DV-004": {
+        "name": "OAuth App Consent Exposure Validation",
+        "script": Path("powershell") / "Engines" / "DynamicValidation" / "Invoke-ZTVP-IDC004.ps1",
+        "state": Path("powershell") / "Reports" / "Dynamic" / "ID-C-004" / "consent-state.json",
+        "local_evidence": Path("powershell") / "Reports" / "Dynamic" / "ID-C-004" / "consent-state.json",
+        "report": Path("powershell") / "Reports" / "Dynamic" / "ID-C-004-result.json",
+        "html": Path("powershell") / "Reports" / "Dynamic" / "Html" / "ID-C-004-result.html",
+    },
 }
 
 
@@ -135,6 +161,8 @@ def _verdict_from_status(status: object) -> str | None:
     if text.startswith("PASS"):
         return "PASS"
     if text.startswith("PARTIAL"):
+        return "PARTIAL"
+    if text.startswith("CONFIGURED") or text.startswith("REPORT_ONLY") or text.startswith("NO_EVIDENCE"):
         return "PARTIAL"
     if text.startswith("FAIL"):
         return "FAIL"
@@ -187,6 +215,20 @@ def _tenant_status(report: dict[str, Any]) -> str:
         if summary.get("sign_in_result") != "Unknown":
             return "Found"
         return "Not found"
+    if str(report.get("scenario_id") or "").upper() in {"ID-DV-002", "ID-C-002"}:
+        metrics = report.get("metrics") or {}
+        if metrics.get("token_issued") or metrics.get("device_code_evidence_count") or metrics.get("blocked_evidence_count"):
+            return "Found"
+        if report:
+            return "Not found"
+        return "Waiting"
+    if str(report.get("scenario_id") or "").upper() in {"ID-DV-003", "ID-C-003"}:
+        metrics = report.get("metrics") or {}
+        if metrics.get("legacy_signin_evidence_count") or metrics.get("entra_signins_retrieved") or metrics.get("legacy_block_policy_names_count"):
+            return "Found"
+        if report:
+            return "Not found"
+        return "Waiting"
     if str(report.get("scenario_id") or "").upper() == "DEV-DV-001":
         evidence = report.get("sign_in_log_evidence") or {}
         if evidence.get("meaningful_sign_in_count") or evidence.get("selected_event"):
@@ -252,6 +294,10 @@ def _phase_for_scenario(scenario_id: str) -> str:
         return "Running SharePoint createLink test"
     if scenario_id == "ID-DV-001":
         return "Waiting for Entra sign-in / MFA evidence"
+    if scenario_id == "ID-DV-002":
+        return "Polling device-code token and tenant evidence"
+    if scenario_id == "ID-DV-003":
+        return "Testing legacy protocols and collecting Entra evidence"
     if scenario_id in {"APP-DV-004", "DEV-DV-001"}:
         return "Waiting for Entra sign-in / Conditional Access evidence"
     if scenario_id == "DEV-DV-004":
@@ -282,6 +328,15 @@ def _redact_powershell_args(args: list[str] | None) -> list[str]:
         if str(value).lower() in secret_switches:
             hide_next = True
     return redacted
+
+
+def _arg_value(args: list[str] | None, switch: str, default: Any = None) -> Any:
+    values = list(args or [])
+    switch_lower = switch.lower()
+    for index, value in enumerate(values):
+        if str(value).lower() == switch_lower and index + 1 < len(values):
+            return values[index + 1]
+    return default
 
 
 def _appdv003_live_fields(project_root: Path, meta: dict[str, Any]) -> dict[str, Any]:
@@ -364,6 +419,10 @@ def _initial_message(scenario_id: str, max_attempts: int) -> str:
         return "Creating dummy file and attempting anonymous createLink."
     if scenario_id == "ID-DV-001":
         return f"Waiting for Entra sign-in / MFA evidence. Attempt 1 of {max_attempts}."
+    if scenario_id == "ID-DV-002":
+        return f"Polling token endpoint and Entra sign-in evidence. Attempt 1 of {max_attempts}."
+    if scenario_id == "ID-DV-003":
+        return "Testing SMTP/IMAP/POP and waiting for Entra legacy sign-in evidence."
     if scenario_id == "DEV-DV-001":
         return "Waiting for unmanaged-device sign-in evidence."
     if scenario_id == "APP-DV-004":
@@ -380,6 +439,10 @@ def _poll_message(scenario_id: str, attempt: int, max_attempts: int, poll_second
         return "Microsoft Graph createLink", "Testing anonymous/public sharing link creation and cleanup."
     if scenario_id == "ID-DV-001":
         return "Entra sign-in logs + MFA evidence", f"Checking Entra sign-in logs, MFA evidence, and effective Conditional Access policy. Attempt {attempt} of {max_attempts}."
+    if scenario_id == "ID-DV-002":
+        return "Token endpoint + Entra sign-in logs", f"Waiting for device-code token or tenant evidence. Attempt {attempt} of {max_attempts}."
+    if scenario_id == "ID-DV-003":
+        return "legacy protocol tests + Entra sign-in logs", f"Checking legacy protocol results and Entra sign-in evidence. Attempt {attempt} of {max_attempts}."
     if scenario_id == "DEV-DV-001":
         return "Entra sign-in logs", f"Waiting for unmanaged-device sign-in evidence. Attempt {attempt} of {max_attempts}."
     if scenario_id == "APP-DV-004":
@@ -624,7 +687,7 @@ def start_scenario_job(
 
     scenario_state = _read_json(project_root / SCENARIOS[scenario_id]["state"])
     state_run_id = str(scenario_state.get("run_id") or "").strip()
-    always_new = {"APP-DV-003", "APP-DV-008", "CLD-DV-001", "ID-DV-005"}
+    always_new = {"APP-DV-003", "APP-DV-008", "CLD-DV-001", "ID-DV-002", "ID-DV-003", "ID-DV-004", "ID-DV-005"}
     run_id = run_id or (str(existing.get("run_id")) if resume and existing else state_run_id if scenario_id not in always_new else "" or new_run_id(scenario_id))
     if is_live(run_id):
         return load_run(project_root, run_id)
@@ -690,6 +753,16 @@ def start_scenario_job(
                 "tenant_evidence_status": "Waiting",
             }
         )
+    if scenario_id == "ID-DV-002":
+        state.update(
+            {
+                "phase": _phase_for_scenario(scenario_id),
+                "current_message": _initial_message(scenario_id, max_attempts),
+                "current_evidence_source": "Token endpoint + Entra sign-in logs",
+                "target_app": "Microsoft Graph PowerShell",
+                "tenant_evidence_status": "Waiting",
+            }
+        )
     state.update(_local_proof(local_evidence, scenario_id))
     if scenario_id == "APP-DV-003":
         state.update(
@@ -716,24 +789,56 @@ def start_scenario_job(
             }
         )
     if scenario_id == "ID-DV-005":
-        arg_map = dict(zip((extra_args or [])[0::2], (extra_args or [])[1::2]))
+        total_search_seconds = int(_arg_value(extra_args, "-TotalEvidenceSearchTimeSeconds", wait_minutes * 60) or wait_minutes * 60)
+        poll_interval = int(_arg_value(extra_args, "-PollIntervalSeconds", poll_seconds) or poll_seconds)
+        max_idc005_polls = max(1, int(math.ceil(max(1, total_search_seconds) / max(1, poll_interval))))
         state.update(
             {
                 "status": "running",
-                "phase": "Preparing guest invitation",
-                "current_message": "Starting ID-DV-005 guest invitation in the background.",
-                "current_evidence_source": "Microsoft Graph invitations",
+                "phase": "Queued for Entra evidence collection",
+                "current_message": "ID-DV-005 evidence collection is queued.",
+                "current_evidence_source": "Entra sign-in logs",
                 "local_evidence_status": "Not applicable",
                 "tenant_evidence_status": "Waiting",
-                "external_test_email": arg_map.get("-ExternalEmail"),
-                "guest_display_name_prefix": arg_map.get("-GuestDisplayNamePrefix"),
-                "redirect_url": arg_map.get("-InviteRedirectUrl"),
-                "guest_invitation_attempted": False,
-                "guest_invitation_succeeded": False,
+                "external_test_email": target,
+                "guest_invitation_attempted": True,
+                "guest_invitation_succeeded": True,
                 "tenant_blocked_invite": False,
                 "operator": None,
                 "tenant_id": None,
-                "progress_percent": 5,
+                "progress_percent": 0,
+                "poll_attempts": 0,
+                "max_poll_attempts": max_idc005_polls,
+                "total_evidence_search_time_seconds": total_search_seconds,
+                "retry_interval_seconds": poll_interval,
+                "poll_seconds": poll_interval,
+            }
+        )
+    if scenario_id == "ID-DV-004":
+        total_search_seconds = int(_arg_value(extra_args, "-TotalEvidenceSearchTimeSeconds", wait_minutes * 60) or wait_minutes * 60)
+        poll_interval = int(_arg_value(extra_args, "-PollIntervalSeconds", poll_seconds) or poll_seconds)
+        log_wait_seconds = int(_arg_value(extra_args, "-LogPropagationWaitSeconds", 0) or 0)
+        max_idc004_polls = max(1, int(math.ceil(max(1, total_search_seconds) / max(1, poll_interval))))
+        test_app = scenario_state.get("test_application") or {}
+        state.update(
+            {
+                "status": "running",
+                "phase": "Queued for OAuth grant evidence collection",
+                "current_message": "ID-DV-004 OAuth grant evidence collection is queued.",
+                "current_evidence_source": "Microsoft Graph oauth2PermissionGrant query",
+                "local_evidence_status": "Not applicable",
+                "tenant_evidence_status": "Waiting",
+                "target_app": test_app.get("display_name"),
+                "app_id": test_app.get("app_id"),
+                "service_principal_id": test_app.get("service_principal_id"),
+                "requested_scope": test_app.get("requested_scope"),
+                "progress_percent": 0,
+                "poll_attempts": 0,
+                "max_poll_attempts": max_idc004_polls,
+                "total_evidence_search_time_seconds": total_search_seconds,
+                "log_propagation_wait_seconds": log_wait_seconds,
+                "retry_interval_seconds": poll_interval,
+                "poll_seconds": poll_interval,
             }
         )
     redacted_extra_args = _redact_powershell_args(extra_args)
@@ -761,7 +866,7 @@ def start_scenario_job(
                 ]
                 if scenario_id == "DEV-DV-001"
                 else redacted_extra_args
-                if scenario_id in {"APP-DV-003", "APP-DV-008", "CLD-DV-001", "ID-DV-005"} and redacted_extra_args
+                if scenario_id in {"APP-DV-003", "APP-DV-008", "CLD-DV-001", "ID-DV-002", "ID-DV-003", "ID-DV-004", "ID-DV-005"} and redacted_extra_args
                 else [
                     *(
                         ["-RunId", run_id]
@@ -1041,6 +1146,53 @@ def _run_iddv005_job(project_root: Path, run_id: str, wait_minutes: int, poll_se
     proc: subprocess.Popen[str] | None = None
     stdout_all: list[str] = []
     graph_status = get_graph_context()
+    total_search_seconds = int(_arg_value(stored_args, "-TotalEvidenceSearchTimeSeconds", max(1, int(wait_minutes)) * 60) or max(1, int(wait_minutes)) * 60)
+    poll_interval = int(_arg_value(stored_args, "-PollIntervalSeconds", max(1, int(poll_seconds))) or max(1, int(poll_seconds)))
+    log_wait_seconds = int(_arg_value(stored_args, "-LogPropagationWaitSeconds", 0) or 0)
+    max_polls = max(1, int(math.ceil(max(1, total_search_seconds) / max(1, poll_interval))))
+
+    def _start_reader(pipe: Any, name: str, output_queue: "queue.Queue[tuple[str, str]]") -> None:
+        def _reader() -> None:
+            try:
+                if not pipe:
+                    return
+                for line in iter(pipe.readline, ""):
+                    if not line:
+                        break
+                    output_queue.put((name, line))
+            except Exception as exc:
+                output_queue.put((name, f"[reader error] {exc}\n"))
+
+        threading.Thread(target=_reader, daemon=True).start()
+
+    def _drain_output(output_queue: "queue.Queue[tuple[str, str]]", stdout_lines: list[str], stderr_lines: list[str]) -> dict[str, Any]:
+        parsed: dict[str, Any] = {}
+        while True:
+            try:
+                stream, line = output_queue.get_nowait()
+            except queue.Empty:
+                break
+            text = str(line or "")
+            if stream == "stderr":
+                stderr_lines.append(text)
+            else:
+                stdout_lines.append(text)
+            clean = text.strip()
+            if not clean:
+                continue
+            poll_match = re.search(r"Poll\s+(\d+)\s*/\s*(\d+)", clean, re.IGNORECASE)
+            if poll_match:
+                parsed["poll_attempts"] = int(poll_match.group(1))
+                parsed["max_poll_attempts"] = int(poll_match.group(2))
+            admin_match = re.search(r"Matched\s+(\d+)\s+admin portal rows", clean, re.IGNORECASE)
+            if admin_match:
+                parsed["admin_portal_rows"] = int(admin_match.group(1))
+            result_match = re.search(r"Latest admin portal result:\s*(\S+)", clean, re.IGNORECASE)
+            if result_match:
+                parsed["latest_portal_result"] = result_match.group(1).upper()
+            if "Fresh portal attempt found" in clean:
+                parsed["fresh_portal_found"] = True
+        return parsed
 
     try:
         scenario_state = _read_json(project_root / meta["state"])
@@ -1055,7 +1207,12 @@ def _run_iddv005_job(project_root: Path, run_id: str, wait_minutes: int, poll_se
             graph_connection_status=graph_status.get("status"),
             tenant_id=graph_status.get("tenant_id"),
             operator=graph_status.get("account"),
-            progress_percent=10,
+            progress_percent=0,
+            poll_attempts=0,
+            max_poll_attempts=max_polls,
+            retry_interval_seconds=poll_interval,
+            total_evidence_search_time_seconds=total_search_seconds,
+            log_propagation_wait_seconds=log_wait_seconds,
             guest_invitation_attempted=True,
             guest_invitation_succeeded=True,
             external_test_email=external.get("external_email"),
@@ -1084,22 +1241,91 @@ def _run_iddv005_job(project_root: Path, run_id: str, wait_minutes: int, poll_se
         proc = subprocess.Popen(invoke_args, cwd=str(project_root), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=_powershell_env())
         with _REGISTRY_LOCK:
             _REGISTRY[run_id] = proc
+        started = datetime.now(timezone.utc)
+        output_queue: "queue.Queue[tuple[str, str]]" = queue.Queue()
+        stderr_all: list[str] = []
+        _start_reader(proc.stdout, "stdout", output_queue)
+        _start_reader(proc.stderr, "stderr", output_queue)
+        hard_deadline_seconds = log_wait_seconds + total_search_seconds + max(90, poll_interval + 45)
         while proc.poll() is None:
+            parsed = _drain_output(output_queue, stdout_all, stderr_all)
             current = load_run(project_root, run_id)
             if current.get("cancel_requested"):
                 proc.terminate()
-                stdout, stderr = proc.communicate(timeout=10)
-                stdout_all.append(stdout or "")
-                report = _idc005_report(project_root, run_id, "CANCELLED", "CANCELLED", "UNKNOWN", "Run cancelled by user.", graph_status, stderr or None)
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=10)
+                _drain_output(output_queue, stdout_all, stderr_all)
+                report = _idc005_report(project_root, run_id, "CANCELLED", "CANCELLED", "UNKNOWN", "Run cancelled by user.", graph_status, "".join(stderr_all) or None)
                 report_json, report_html = _write_run_report(project_root, scenario_id, run_id, report, stdout="\n".join(stdout_all))
-                update_run(project_root, run_id, status="cancelled", verdict="CANCELLED", phase="Cancelled", current_message="Run cancelled by user.", completed_utc=utc_now(), report_path=str(report_json), report_json_path=str(report_json), html_report_path=str(report_html), report_html_path=str(report_html))
+                update_run(project_root, run_id, status="cancelled", verdict="CANCELLED", phase="Cancelled", current_message="Run cancelled by user.", progress_percent=100, completed_utc=utc_now(), report_path=str(report_json), report_json_path=str(report_json), html_report_path=str(report_html), report_html_path=str(report_html))
                 return
-            update_run(project_root, run_id, phase="Collecting guest sign-in evidence", current_message="Polling Entra guest sign-in evidence for ID-DV-005.", progress_percent=80)
+            elapsed = max(0, int((datetime.now(timezone.utc) - started).total_seconds()))
+            if elapsed > hard_deadline_seconds:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=10)
+                _drain_output(output_queue, stdout_all, stderr_all)
+                report = _idc005_report(project_root, run_id, "PARTIAL_NO_ADMIN_PORTAL_TELEMETRY", "PARTIAL", "UNKNOWN", "PARTIAL: No fresh admin/management portal sign-in was found before the selected timeout.", graph_status, "".join(stderr_all) or None)
+                report.setdefault("metrics", {})
+                report["metrics"].update(
+                    {
+                        "poll_attempts": int(current.get("poll_attempts") or max_polls),
+                        "max_poll_attempts": int(current.get("max_poll_attempts") or max_polls),
+                        "total_evidence_search_time_seconds": total_search_seconds,
+                        "poll_interval_seconds": poll_interval,
+                        "tenant_evidence_found": False,
+                    }
+                )
+                report_json, report_html = _write_run_report(project_root, scenario_id, run_id, report, stdout="\n".join(stdout_all))
+                update_run(project_root, run_id, status="completed", verdict="PARTIAL", risk="UNKNOWN", phase="Completed", current_message=report.get("final_claim") or report.get("executive_summary"), progress_percent=100, poll_attempts=int(current.get("poll_attempts") or max_polls), max_poll_attempts=max_polls, tenant_evidence_status="Not found", completed_utc=utc_now(), report_path=str(report_json), report_json_path=str(report_json), html_report_path=str(report_html), report_html_path=str(report_html), final_summary=report.get("final_claim") or report.get("executive_summary"))
+                return
+            if elapsed < log_wait_seconds:
+                progress = min(15, int((elapsed / max(1, log_wait_seconds)) * 15))
+                update_run(
+                    project_root,
+                    run_id,
+                    phase="Waiting for Entra log propagation",
+                    current_message="Waiting for Entra log propagation...",
+                    progress_percent=progress,
+                    poll_attempts=0,
+                    max_poll_attempts=max_polls,
+                    elapsed_seconds=elapsed,
+                    remaining_seconds=max(0, log_wait_seconds + total_search_seconds - elapsed),
+                    tenant_evidence_status="Waiting",
+                )
+            else:
+                search_elapsed = max(0, elapsed - log_wait_seconds)
+                poll_attempt = int(parsed.get("poll_attempts") or current.get("poll_attempts") or min(max_polls, max(1, int(search_elapsed // max(1, poll_interval)) + 1)))
+                max_seen = int(parsed.get("max_poll_attempts") or current.get("max_poll_attempts") or max_polls)
+                progress = min(95, int((min(poll_attempt, max_seen) / max(1, max_seen)) * 95))
+                latest_result = parsed.get("latest_portal_result") or current.get("latest_portal_result")
+                tenant_status = "Found" if parsed.get("fresh_portal_found") or int(parsed.get("admin_portal_rows") or 0) > 0 or str(current.get("tenant_evidence_status") or "").lower() == "found" else "Waiting"
+                message = "Fresh portal attempt found. Finalizing verdict." if tenant_status == "Found" else f"Poll {poll_attempt}/{max_seen}: no fresh portal attempt found yet."
+                update_run(
+                    project_root,
+                    run_id,
+                    phase="Searching Entra sign-in logs",
+                    current_message=message,
+                    progress_percent=progress,
+                    poll_attempts=poll_attempt,
+                    max_poll_attempts=max_seen,
+                    elapsed_seconds=elapsed,
+                    remaining_seconds=max(0, log_wait_seconds + total_search_seconds - elapsed),
+                    tenant_evidence_status=tenant_status,
+                    latest_portal_result=latest_result,
+                )
             time.sleep(2)
-        stdout, stderr = proc.communicate(timeout=10)
-        stdout_all.append(stdout or "")
+        proc.wait(timeout=10)
+        _drain_output(output_queue, stdout_all, stderr_all)
+        stderr = "".join(stderr_all)
         if proc.returncode != 0:
-            error_text = (stderr or stdout or f"PowerShell exited with {proc.returncode}")[-6000:]
+            error_text = (stderr or "".join(stdout_all) or f"PowerShell exited with {proc.returncode}")[-6000:]
             category = classify_graph_error(error_text)
             message = "Microsoft Graph session expired. Go to Home and click Connect Microsoft Graph, then rerun." if category == "GRAPH_SESSION_EXPIRED" else "ID-DV-005 evidence collection did not complete."
             report = _idc005_report(project_root, run_id, "ERROR_GRAPH_SESSION_EXPIRED" if category == "GRAPH_SESSION_EXPIRED" else "ERROR", "ERROR", "UNKNOWN", message, graph_status, error_text)
@@ -1135,6 +1361,10 @@ def _run_iddv005_job(project_root: Path, run_id: str, wait_minutes: int, poll_se
             phase="Completed",
             current_message=message,
             progress_percent=100,
+            poll_attempts=int(metrics.get("poll_attempts") or metrics.get("evidence_poll_count") or 0),
+            max_poll_attempts=int(metrics.get("max_poll_attempts") or max_polls),
+            retry_interval_seconds=int(metrics.get("poll_interval_seconds") or poll_interval),
+            total_evidence_search_time_seconds=int(metrics.get("total_evidence_search_time_seconds") or total_search_seconds),
             guest_invitation_attempted=True,
             guest_invitation_succeeded=bool(metrics.get("guest_invitation_succeeded", True)),
             tenant_blocked_invite=bool(metrics.get("tenant_blocked_invite", False)),
@@ -1163,6 +1393,230 @@ def _run_iddv005_job(project_root: Path, run_id: str, wait_minutes: int, poll_se
             _RUN_ARGS.pop(run_id, None)
 
 
+def _run_iddv004_job(project_root: Path, run_id: str, wait_minutes: int, poll_seconds: int) -> None:
+    scenario_id = "ID-DV-004"
+    meta = SCENARIOS[scenario_id]
+    invoke_script = project_root / meta["script"]
+    report_path = project_root / meta["report"]
+    html_path = project_root / meta["html"]
+    with _REGISTRY_LOCK:
+        stored_args = list(_RUN_ARGS.get(run_id) or [])
+    proc: subprocess.Popen[str] | None = None
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    graph_status = get_graph_context()
+    total_search_seconds = int(_arg_value(stored_args, "-TotalEvidenceSearchTimeSeconds", max(1, int(wait_minutes)) * 60) or max(1, int(wait_minutes)) * 60)
+    poll_interval = int(_arg_value(stored_args, "-PollIntervalSeconds", max(1, int(poll_seconds))) or max(1, int(poll_seconds)))
+    log_wait_seconds = int(_arg_value(stored_args, "-LogPropagationWaitSeconds", 0) or 0)
+    max_polls = max(1, int(math.ceil(max(1, total_search_seconds) / max(1, poll_interval))))
+
+    def _start_reader(pipe: Any, name: str, output_queue: "queue.Queue[tuple[str, str]]") -> None:
+        def _reader() -> None:
+            try:
+                if not pipe:
+                    return
+                for line in iter(pipe.readline, ""):
+                    if not line:
+                        break
+                    output_queue.put((name, line))
+            except Exception as exc:
+                output_queue.put((name, f"[reader error] {exc}\n"))
+
+        threading.Thread(target=_reader, daemon=True).start()
+
+    def _drain_output(output_queue: "queue.Queue[tuple[str, str]]") -> dict[str, Any]:
+        parsed: dict[str, Any] = {}
+        while True:
+            try:
+                stream, line = output_queue.get_nowait()
+            except queue.Empty:
+                break
+            text = str(line or "")
+            if stream == "stderr":
+                stderr_lines.append(text)
+            else:
+                stdout_lines.append(text)
+            clean = text.strip()
+            if not clean:
+                continue
+            poll_match = re.search(r"Poll\s+(\d+)\s*/\s*(\d+)", clean, re.IGNORECASE)
+            if poll_match:
+                parsed["poll_attempts"] = int(poll_match.group(1))
+                parsed["max_poll_attempts"] = int(poll_match.group(2))
+            grant_count_match = re.search(r"OAuth grants found:\s*(\d+)", clean, re.IGNORECASE)
+            if grant_count_match:
+                parsed["grant_count"] = int(grant_count_match.group(1))
+            if "found an oauth2PermissionGrant" in clean:
+                parsed["grant_found"] = True
+            if "found 0 oauth2PermissionGrant" in clean:
+                parsed["zero_grants"] = True
+        return parsed
+
+    try:
+        scenario_state = _read_json(project_root / meta["state"])
+        test_app = scenario_state.get("test_application") or {}
+        update_run(
+            project_root,
+            run_id,
+            status="running",
+            phase="Collecting OAuth grant evidence",
+            current_message="Polling Microsoft Graph oauth2PermissionGrant evidence for ID-DV-004.",
+            graph_connection_status=graph_status.get("status"),
+            tenant_id=graph_status.get("tenant_id"),
+            operator=graph_status.get("account"),
+            progress_percent=0,
+            poll_attempts=0,
+            max_poll_attempts=max_polls,
+            retry_interval_seconds=poll_interval,
+            total_evidence_search_time_seconds=total_search_seconds,
+            log_propagation_wait_seconds=log_wait_seconds,
+            current_evidence_source="Microsoft Graph oauth2PermissionGrant query",
+            tenant_evidence_status="Waiting",
+            target_app=test_app.get("display_name"),
+            app_id=test_app.get("app_id"),
+            service_principal_id=test_app.get("service_principal_id"),
+            requested_scope=test_app.get("requested_scope"),
+        )
+        invoke_args = [
+            _powershell_exe(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(invoke_script),
+            *(stored_args or ["-ObservedOutcome", "NOT_RECORDED"]),
+            "-RunId",
+            run_id,
+        ]
+        proc = subprocess.Popen(invoke_args, cwd=str(project_root), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=_powershell_env())
+        with _REGISTRY_LOCK:
+            _REGISTRY[run_id] = proc
+        output_queue: "queue.Queue[tuple[str, str]]" = queue.Queue()
+        _start_reader(proc.stdout, "stdout", output_queue)
+        _start_reader(proc.stderr, "stderr", output_queue)
+        started = datetime.now(timezone.utc)
+        hard_deadline_seconds = log_wait_seconds + total_search_seconds + max(90, poll_interval + 45)
+        while proc.poll() is None:
+            parsed = _drain_output(output_queue)
+            elapsed = int((datetime.now(timezone.utc) - started).total_seconds())
+            current = load_run(project_root, run_id)
+            if elapsed < log_wait_seconds:
+                progress = min(10, int((elapsed / max(1, log_wait_seconds)) * 10))
+                update_run(
+                    project_root,
+                    run_id,
+                    phase="Waiting for Graph propagation",
+                    current_message=f"Waiting {max(0, log_wait_seconds - elapsed)} seconds before querying OAuth grants.",
+                    progress_percent=progress,
+                    elapsed_seconds=elapsed,
+                    remaining_seconds=max(0, log_wait_seconds + total_search_seconds - elapsed),
+                    tenant_evidence_status="Waiting",
+                )
+            else:
+                search_elapsed = max(0, elapsed - log_wait_seconds)
+                poll_attempt = int(parsed.get("poll_attempts") or current.get("poll_attempts") or min(max_polls, max(1, int(search_elapsed // max(1, poll_interval)) + 1)))
+                max_seen = int(parsed.get("max_poll_attempts") or current.get("max_poll_attempts") or max_polls)
+                progress = min(95, int((min(poll_attempt, max_seen) / max(1, max_seen)) * 95))
+                grant_count = int(parsed.get("grant_count") or current.get("grant_count") or 0)
+                grant_found = bool(parsed.get("grant_found") or grant_count > 0)
+                tenant_status = "Found" if grant_found else "Not found" if poll_attempt >= max_seen else "Waiting"
+                message = "OAuth grant found. Finalizing verdict." if grant_found else f"Poll {poll_attempt}/{max_seen}: no OAuth grant found yet."
+                update_run(
+                    project_root,
+                    run_id,
+                    phase="Searching OAuth permission grants",
+                    current_message=message,
+                    progress_percent=progress,
+                    poll_attempts=poll_attempt,
+                    max_poll_attempts=max_seen,
+                    elapsed_seconds=elapsed,
+                    remaining_seconds=max(0, log_wait_seconds + total_search_seconds - elapsed),
+                    tenant_evidence_status=tenant_status,
+                    grant_count=grant_count,
+                    oauth_grant_created=grant_found,
+                )
+            if elapsed > hard_deadline_seconds:
+                proc.kill()
+                raise TimeoutError("ID-DV-004 evidence collection exceeded the configured timeout.")
+            time.sleep(2)
+        proc.wait(timeout=10)
+        _drain_output(output_queue)
+        stderr = "".join(stderr_lines)
+        if proc.returncode != 0:
+            error_text = (stderr or "".join(stdout_lines) or f"PowerShell exited with {proc.returncode}")[-6000:]
+            category = classify_graph_error(error_text)
+            message = "Microsoft Graph session expired. Go to Home and click Connect Microsoft Graph, then rerun." if category == "GRAPH_SESSION_EXPIRED" else "ID-DV-004 evidence collection did not complete."
+            report = _terminal_report(project_root, scenario_id, run_id, "ERROR", "ERROR", "UNKNOWN", message, error=error_text)
+            report_json, report_html = _write_run_report(project_root, scenario_id, run_id, report, stdout="\n".join(stdout_lines))
+            update_run(project_root, run_id, status="error", verdict="ERROR", phase="Evidence collection error", current_message=message, progress_percent=100, graph_connection_status=graph_status.get("status"), error_category=category, error=error_text, report_path=str(report_json), report_json_path=str(report_json), html_report_path=str(report_html), report_html_path=str(report_html), completed_utc=utc_now(), final_summary=message)
+            return
+
+        report = _read_json(report_path)
+        if not report:
+            report = _terminal_report(project_root, scenario_id, run_id, "PARTIAL", "PARTIAL", "MEDIUM", "ID-DV-004 completed, but the scenario report was not found.")
+        report["run_id"] = run_id
+        report.setdefault("display_id", "ID-DV-004")
+        report.setdefault("scenario_id", "ID-DV-004")
+        report.setdefault("scenario_name", meta["name"])
+        report.setdefault("graph_connection_status", graph_status.get("status"))
+        write_standard_html_report(report, html_path, stdout="\n".join(stdout_lines))
+        active_dir = project_root / "powershell" / "Reports" / "ActiveRuns"
+        active_dir.mkdir(parents=True, exist_ok=True)
+        archived_report_path = active_dir / f"{run_id}-result.json"
+        archived_html_path = active_dir / f"{run_id}-result.html"
+        report_path.write_text(__import__("json").dumps(report, indent=2), encoding="utf-8")
+        shutil.copy2(report_path, archived_report_path)
+        shutil.copy2(html_path, archived_html_path)
+        verdict = _verdict_from_status(report.get("status")) or str(report.get("verdict") or "PARTIAL").upper()
+        metrics = report.get("metrics") or {}
+        message = str(report.get("tenant_proof_text") or report.get("final_claim") or report.get("executive_summary") or f"ID-DV-004 completed. Verdict: {verdict}.")
+        update_run(
+            project_root,
+            run_id,
+            status="completed",
+            verdict=verdict,
+            risk=str(report.get("risk") or "MEDIUM").upper(),
+            phase="Completed",
+            current_message=message,
+            progress_percent=100,
+            poll_attempts=int(metrics.get("poll_attempts") or max_polls),
+            max_poll_attempts=int(metrics.get("max_poll_attempts") or max_polls),
+            retry_interval_seconds=int(metrics.get("poll_interval_seconds") or poll_interval),
+            total_evidence_search_time_seconds=int(metrics.get("total_evidence_search_time_seconds") or total_search_seconds),
+            log_propagation_wait_seconds=int(metrics.get("log_propagation_wait_seconds") or log_wait_seconds),
+            tenant_evidence_status="Found" if metrics.get("oauth_grant_created") else "Not found",
+            oauth_grant_created=bool(metrics.get("oauth_grant_created")),
+            grant_count=int(metrics.get("oauth_grant_count") or metrics.get("grant_count") or 0),
+            current_evidence_source=report.get("tenant_evidence_source") or "Microsoft Graph oauth2PermissionGrant query",
+            target_app=(report.get("test_application") or {}).get("display_name"),
+            app_id=(report.get("test_application") or {}).get("app_id"),
+            service_principal_id=(report.get("test_application") or {}).get("service_principal_id"),
+            requested_scope=(report.get("test_application") or {}).get("requested_scope"),
+            graph_connection_status=graph_status.get("status"),
+            report_path=str(archived_report_path),
+            report_json_path=str(archived_report_path),
+            html_report_path=str(archived_html_path),
+            report_html_path=str(archived_html_path),
+            completed_utc=utc_now(),
+            final_summary=message,
+        )
+    except Exception as exc:
+        error_text = str(exc)
+        category = classify_graph_error(error_text)
+        message = "Microsoft Graph session expired. Go to Home and click Connect Microsoft Graph, then rerun." if category == "GRAPH_SESSION_EXPIRED" else "ID-DV-004 stopped because an error occurred."
+        try:
+            report = _terminal_report(project_root, scenario_id, run_id, "ERROR", "ERROR", "UNKNOWN", message, error=error_text)
+            report_json, report_html = _write_run_report(project_root, scenario_id, run_id, report, stdout="\n".join(stdout_lines))
+        except Exception:
+            report_json = None
+            report_html = None
+        update_run(project_root, run_id, status="error", verdict="ERROR", phase="Error", current_message=message, error_category=category, error=error_text, report_path=str(report_json) if report_json else None, report_json_path=str(report_json) if report_json else None, html_report_path=str(report_html) if report_html else None, report_html_path=str(report_html) if report_html else None, completed_utc=utc_now(), final_summary=message)
+    finally:
+        with _REGISTRY_LOCK:
+            _REGISTRY.pop(run_id, None)
+            _RUN_ARGS.pop(run_id, None)
+
+
 def _run_job(project_root: Path, scenario_id: str, run_id: str, wait_minutes: int, poll_seconds: int) -> None:
     meta = SCENARIOS[scenario_id]
     script_path = project_root / meta["script"]
@@ -1173,6 +1627,7 @@ def _run_job(project_root: Path, scenario_id: str, run_id: str, wait_minutes: in
     proc: subprocess.Popen[str] | None = None
     stdout = ""
     stderr = ""
+    timed_out = False
 
     try:
         if scenario_id == "ID-DV-001":
@@ -1180,6 +1635,9 @@ def _run_job(project_root: Path, scenario_id: str, run_id: str, wait_minutes: in
             return
         if scenario_id == "ID-DV-005":
             _run_iddv005_job(project_root, run_id, wait_minutes, poll_seconds)
+            return
+        if scenario_id == "ID-DV-004":
+            _run_iddv004_job(project_root, run_id, wait_minutes, poll_seconds)
             return
         update_run(
             project_root,
@@ -1227,7 +1685,7 @@ def _run_job(project_root: Path, scenario_id: str, run_id: str, wait_minutes: in
                 "-RunId",
                 run_id,
             ]
-        elif scenario_id in {"APP-DV-003", "APP-DV-008", "CLD-DV-001"}:
+        elif scenario_id in {"APP-DV-003", "APP-DV-008", "CLD-DV-001", "ID-DV-002", "ID-DV-003"}:
             with _REGISTRY_LOCK:
                 stored_args = list(_RUN_ARGS.get(run_id) or [])
             ps_args = [
@@ -1263,6 +1721,7 @@ def _run_job(project_root: Path, scenario_id: str, run_id: str, wait_minutes: in
         with _REGISTRY_LOCK:
             _REGISTRY[run_id] = proc
 
+        hard_deadline_seconds = (int(wait_minutes) * 60) + max(90, int(poll_seconds) + 45)
         while proc.poll() is None:
             current = load_run(project_root, run_id)
             if current.get("cancel_requested"):
@@ -1305,6 +1764,16 @@ def _run_job(project_root: Path, scenario_id: str, run_id: str, wait_minutes: in
                 return
 
             elapsed = max(0, (datetime.now(timezone.utc) - started).total_seconds())
+            if elapsed > hard_deadline_seconds:
+                proc.terminate()
+                try:
+                    stdout, stderr = proc.communicate(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    stdout, stderr = proc.communicate(timeout=10)
+                timed_out = True
+                break
+
             attempt = min(max_attempts, max(1, int(elapsed // max(1, poll_seconds)) + 1))
             progress = min(95, int((attempt / max_attempts) * 100))
             evidence_source, poll_message = _poll_message(scenario_id, attempt, max_attempts, poll_seconds)
@@ -1329,7 +1798,44 @@ def _run_job(project_root: Path, scenario_id: str, run_id: str, wait_minutes: in
             update_run(project_root, run_id, **loop_updates)
             time.sleep(2)
 
-        stdout, stderr = proc.communicate(timeout=10)
+        if not timed_out:
+            stdout, stderr = proc.communicate(timeout=10)
+        if timed_out:
+            report = _terminal_report(
+                project_root,
+                scenario_id,
+                run_id,
+                "PARTIAL_TIMEOUT",
+                "PARTIAL",
+                "UNKNOWN",
+                "Polling stopped because the configured timeout was reached.",
+                error=stderr[-6000:] if stderr else None,
+            )
+            report_json, report_html = _write_run_report(project_root, scenario_id, run_id, report, stdout=stdout)
+            update_run(
+                project_root,
+                run_id,
+                status="completed",
+                phase="Completed",
+                verdict="PARTIAL",
+                result_code="PARTIAL_TIMEOUT",
+                risk="UNKNOWN",
+                progress_percent=100,
+                poll_attempts=max_attempts,
+                max_poll_attempts=max_attempts,
+                elapsed_seconds=int((datetime.now(timezone.utc) - started).total_seconds()),
+                remaining_seconds=0,
+                tenant_evidence_status="Not found",
+                current_message="Polling stopped because the configured timeout was reached.",
+                report_path=str(report_json) if report_json else None,
+                report_json_path=str(report_json) if report_json else None,
+                html_report_path=str(report_html) if report_html else None,
+                report_html_path=str(report_html) if report_html else None,
+                completed_utc=utc_now(),
+                final_summary="Polling stopped because the configured timeout was reached.",
+                error=None,
+            )
+            return
         if proc.returncode != 0:
             error_text = (stderr or stdout or f"PowerShell exited with {proc.returncode}")[-6000:]
             report = _terminal_report(
@@ -1379,6 +1885,8 @@ def _run_job(project_root: Path, scenario_id: str, run_id: str, wait_minutes: in
             final_message = str(report.get("final_claim") or report.get("executive_summary") or final_message)
         if scenario_id in CLD_SHAREPOINT_IDS:
             final_message = str(report.get("final_claim") or report.get("executive_summary") or final_message)
+        if scenario_id == "ID-DV-003":
+            final_message = str(report.get("final_claim") or report.get("executive_summary") or final_message)
         if scenario_id == "DEV-DV-004":
             timer = report.get("timer") or {}
             final_state = ((report.get("final_device_state") or {}).get("state") or (report.get("metrics") or {}).get("final_device_state") or "Unknown")
@@ -1392,6 +1900,15 @@ def _run_job(project_root: Path, scenario_id: str, run_id: str, wait_minutes: in
         cld_cleanup = report.get("cleanup") or {}
         cld_site = report.get("site") or {}
         cld_test_object = report.get("test_object") or {}
+        idc003_metrics = report.get("metrics") or {}
+        idc003_policy = report.get("policy_attribution") or {}
+        idc003_mailbox = report.get("mailbox_readiness") or {}
+        idc003_mailbox_final = idc003_mailbox.get("final") if isinstance(idc003_mailbox, dict) else {}
+        if not isinstance(idc003_mailbox_final, dict):
+            idc003_mailbox_final = {}
+        idc002_metrics = report.get("metrics") or {}
+        idc002_token = report.get("token_polling") or {}
+        idc002_policy = report.get("policy_attribution") or {}
         if report:
             write_standard_html_report(report, html_path, stdout=stdout)
         archived_report_path = report_path
@@ -1411,7 +1928,7 @@ def _run_job(project_root: Path, scenario_id: str, run_id: str, wait_minutes: in
             phase="Completed",
             verdict=verdict,
             result_code=_result_code_from_report(report),
-            poll_attempts=int((report.get("metrics") or {}).get("poll_attempts") or ((((report.get("evidence") or {}).get("tenant") or {}).get("api") or {}).get("mde_cloud_poll_attempts")) or max_attempts),
+            poll_attempts=int((report.get("metrics") or {}).get("poll_attempts") or (report.get("metrics") or {}).get("poll_count") or ((((report.get("evidence") or {}).get("tenant") or {}).get("api") or {}).get("mde_cloud_poll_attempts")) or max_attempts),
             max_poll_attempts=int((report.get("metrics") or {}).get("max_poll_attempts") or max_attempts),
             elapsed_seconds=int((report.get("metrics") or {}).get("elapsed_seconds") or 0),
             remaining_seconds=0,
@@ -1441,6 +1958,19 @@ def _run_job(project_root: Path, scenario_id: str, run_id: str, wait_minutes: in
             polling_stopped_early=(report.get("metrics") or {}).get("polling_stopped_early") or ((report.get("mdca_detection_evidence") or {}).get("polling_stopped_early")),
             early_stop_reason=(report.get("metrics") or {}).get("early_stop_reason") or ((report.get("mdca_detection_evidence") or {}).get("early_stop_reason")),
             detection_method=(report.get("metrics") or {}).get("detection_method") or ((report.get("mdca_detection_evidence") or {}).get("detection_method")),
+            mailbox_ready=idc003_metrics.get("mailbox_ready") if scenario_id == "ID-DV-003" else None,
+            protocols_tested=idc003_metrics.get("protocols_tested") if scenario_id == "ID-DV-003" else None,
+            protocol_success_count=idc003_metrics.get("protocol_success_count") if scenario_id == "ID-DV-003" else None,
+            protocol_blocked_or_denied_count=idc003_metrics.get("protocol_blocked_or_denied_count") if scenario_id == "ID-DV-003" else None,
+            legacy_signin_evidence_count=idc003_metrics.get("legacy_signin_evidence_count") if scenario_id == "ID-DV-003" else None,
+            legacy_block_policy_applied=idc003_policy.get("legacy_block_policy_applied") if scenario_id == "ID-DV-003" else None,
+            legacy_block_policy_names=", ".join([str(name) for name in (idc003_policy.get("legacy_block_policy_names") or [])]) if scenario_id == "ID-DV-003" else None,
+            mailbox_mail=idc003_mailbox_final.get("mail") if scenario_id == "ID-DV-003" else None,
+            token_outcome=idc002_token.get("token_outcome") if scenario_id == "ID-DV-002" else None,
+            token_issued=idc002_metrics.get("token_issued") if scenario_id == "ID-DV-002" else None,
+            device_code_evidence_count=idc002_metrics.get("device_code_evidence_count") if scenario_id == "ID-DV-002" else None,
+            blocked_evidence_count=idc002_metrics.get("blocked_evidence_count") if scenario_id == "ID-DV-002" else None,
+            block_policy_names=", ".join([str(name) for name in (idc002_policy.get("block_policy_names") or [])]) if scenario_id == "ID-DV-002" else None,
             progress_percent=100,
             tenant_evidence_status=tenant_status,
             current_message=final_message,

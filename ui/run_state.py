@@ -150,11 +150,8 @@ def normalize_run_state(state: dict[str, Any]) -> dict[str, Any]:
         normalized["verdict"] = "CANCELLED"
     if normalized.get("verdict") not in ALLOWED_VERDICTS:
         normalized["verdict"] = verdict_from_result_code(normalized.get("verdict"))
-    if normalized.get("status") == "completed" and normalized.get("verdict"):
-        try:
-            normalized["progress_percent"] = max(100, int(normalized.get("progress_percent") or 0))
-        except Exception:
-            normalized["progress_percent"] = 100
+    if normalized.get("status") in FINAL_STATUSES:
+        normalized["progress_percent"] = 100
     if not normalized.get("report_path") and normalized.get("report_json_path"):
         normalized["report_path"] = normalized.get("report_json_path")
     if not normalized.get("report_json_path") and normalized.get("report_path"):
@@ -192,7 +189,7 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def load_run(project_root: Path | str, run_id: str) -> dict[str, Any]:
-    return read_json(run_state_path(project_root, run_id))
+    return normalize_run_state(read_json(run_state_path(project_root, run_id)))
 
 
 def save_run(project_root: Path | str, state: dict[str, Any]) -> None:
@@ -252,6 +249,10 @@ def selected_run_for_scenario(project_root: Path | str, scenario_id: str, run_id
         "CLD-C-001": {"APP-DV-008", "CLD-DV-001", "CLD-C-001"},
         "ID-DV-001": {"ID-DV-001", "ID-C-001"},
         "ID-C-001": {"ID-DV-001", "ID-C-001"},
+        "ID-DV-002": {"ID-DV-002", "ID-C-002"},
+        "ID-C-002": {"ID-DV-002", "ID-C-002"},
+        "ID-DV-003": {"ID-DV-003", "ID-C-003"},
+        "ID-C-003": {"ID-DV-003", "ID-C-003"},
         "ID-DV-005": {"ID-DV-005", "ID-C-005"},
         "ID-C-005": {"ID-DV-005", "ID-C-005"},
     }
@@ -271,8 +272,13 @@ def request_cancel(project_root: Path | str, run_id: str) -> dict[str, Any]:
     return update_run(
         project_root,
         run_id,
+        status="cancelled",
+        verdict="CANCELLED",
+        phase="Cancelled",
         cancel_requested=True,
-        current_message="Cancel requested. Waiting for the background job to stop.",
+        progress_percent=100,
+        current_message="Run cancelled by user.",
+        completed_utc=utc_now(),
     )
 
 

@@ -166,10 +166,14 @@ def _verdict_reason(verdict: str, report: dict[str, Any]) -> str:
 def _target(report: dict[str, Any]) -> str:
     dummy = report.get("dummy_file") or {}
     decoy = report.get("decoy_user") or {}
+    guest = report.get("guest_user") or {}
     evidence = report.get("evidence") or {}
-    local = evidence.get("local") or {}
-    tenant = (evidence.get("tenant") or {}).get("api") or {}
+    evidence_dict = evidence if isinstance(evidence, dict) else {}
+    local = evidence_dict.get("local") or {}
+    tenant = (evidence_dict.get("tenant") or {}).get("api") or {}
     return _first(
+        guest.get("external_email"),
+        guest.get("user_principal_name"),
         report.get("target"),
         report.get("target_app"),
         report.get("test_user"),
@@ -206,6 +210,48 @@ def _polling_rows(report: dict[str, Any]) -> list[tuple[str, str]]:
     timer = report.get("timer") or {}
     if str(report.get("display_id") or report.get("scenario_id") or "").upper() in CLD_SHAREPOINT_IDS:
         return []
+    if str(report.get("display_id") or report.get("scenario_id") or "").upper() in {"ID-DV-005", "ID-C-005"}:
+        polling = report.get("evidence_polling") or []
+        latest = report.get("latest_admin_portal_attempt") or {}
+        attempts = _first(metrics.get("poll_attempts"), metrics.get("evidence_poll_count"), default=str(len(polling)))
+        max_attempts = _first(metrics.get("max_poll_attempts"), default="N/A")
+        last_poll = ""
+        if polling:
+            last = polling[-1] if isinstance(polling[-1], dict) else {}
+            last_poll = last.get("checked_at_utc") or ""
+        return [
+            ("Poll interval seconds", _first(metrics.get("poll_interval_seconds"), default="Not recorded")),
+            ("Polls used", f"{attempts} / {max_attempts}"),
+            ("Total search time selected", _first(metrics.get("total_evidence_search_time_seconds"), default="Not recorded") + " seconds"),
+            ("Validation start UTC", _first(report.get("validation_start_utc"), (report.get("validation_window") or {}).get("evidence_start_utc"), metrics.get("evidence_start_utc"), default="Not recorded")),
+            ("Last poll UTC", _first(metrics.get("last_poll_utc"), last_poll, report.get("completed_utc"), default="Not recorded")),
+            ("Matching sign-in found", "Yes" if latest else "No"),
+            ("Result", "Evidence found" if latest else "Timeout / No fresh portal evidence found"),
+        ]
+    if str(report.get("display_id") or report.get("scenario_id") or "").upper() in {"ID-DV-004", "ID-C-004"}:
+        attempts = _first(metrics.get("poll_attempts"), default="0")
+        max_attempts = _first(metrics.get("max_poll_attempts"), default="N/A")
+        return [
+            ("Log propagation wait seconds", _first(metrics.get("log_propagation_wait_seconds"), default="Not recorded")),
+            ("Poll interval seconds", _first(metrics.get("poll_interval_seconds"), default="Not recorded")),
+            ("Polls used", f"{attempts} / {max_attempts}"),
+            ("Total search time selected", _first(metrics.get("total_evidence_search_time_seconds"), default="Not recorded") + " seconds"),
+            ("Last poll UTC", _first(metrics.get("last_poll_utc"), report.get("completed_utc"), default="Not recorded")),
+            ("OAuth grant found", _yes_no(metrics.get("oauth_grant_created"))),
+            ("Result", report.get("tenant_proof_text") or "Not recorded"),
+        ]
+    if str(report.get("display_id") or report.get("scenario_id") or "").upper() in {"ID-DV-002", "ID-C-002"}:
+        found = bool(metrics.get("matching_signin_found") or report.get("matched_sign_in"))
+        attempts = _first(metrics.get("evidence_poll_attempts"), metrics.get("poll_attempts"), default="0")
+        max_attempts = _first(metrics.get("evidence_max_poll_attempts"), metrics.get("max_poll_attempts"), default="N/A")
+        return [
+            ("Poll interval seconds", _first(metrics.get("evidence_poll_interval_seconds"), default="15")),
+            ("Polls used", f"{attempts} / {max_attempts}"),
+            ("Validation start UTC", _first(metrics.get("evidence_start_utc"), report.get("validation_start_utc"), default="Not recorded")),
+            ("Last poll UTC", _first(metrics.get("last_poll_utc"), report.get("completed_utc"), default="Not recorded")),
+            ("Matching sign-in found", "Yes" if found else "No"),
+            ("Result", "Evidence found" if found else "Timeout / No matching sign-in found"),
+        ]
     if str(report.get("scenario_id") or "").upper() == "DEV-DV-004":
         attempts = _first(metrics.get("poll_attempts"), timer.get("poll_attempts"), default="0")
         max_attempts = _first(metrics.get("max_poll_attempts"), timer.get("max_poll_attempts"), default="N/A")
@@ -236,6 +282,51 @@ def _tenant(report: dict[str, Any]) -> str:
     return _first(report.get("tenant_display_name"), report.get("tenant"), report.get("tenant_id"), default="Not recorded")
 
 
+def _value_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value or "").strip()
+    return [text] if text else []
+
+
+def _idc005_policy_name(row: dict[str, Any]) -> str:
+    return str(row.get("displayName") or row.get("policy_control_name") or row.get("name") or "").strip()
+
+
+def _idc005_policy_controls(row: dict[str, Any]) -> list[str]:
+    return _value_list(row.get("enforcedGrantControls") or row.get("grantControls") or row.get("controls"))
+
+
+def _idc005_policy_result(row: dict[str, Any]) -> str:
+    return str(row.get("result") or row.get("classification") or "").strip().lower()
+
+
+def _idc005_main_policy_control(report: dict[str, Any]) -> str:
+    latest = report.get("latest_admin_portal_attempt") or {}
+    policy = report.get("policy_attribution") or {}
+    policies = latest.get("appliedConditionalAccessPolicies") or report.get("policy_control_table") or []
+
+    for row in policies:
+        controls = _idc005_policy_controls(row)
+        if "failure" in _idc005_policy_result(row) and any("block" in control.lower() for control in controls):
+            name = _idc005_policy_name(row)
+            return f"{name} / Block" if name else "Block grant control"
+
+    interruption_terms = ("mfa", "multi-factor", "multifactor", "compliant", "compliance", "terms", "tou")
+    for row in policies:
+        controls = _idc005_policy_controls(row)
+        matching_control = next((control for control in controls if any(term in control.lower() for term in interruption_terms)), "")
+        if "failure" in _idc005_policy_result(row) and matching_control:
+            name = _idc005_policy_name(row)
+            return f"{name} / {matching_control}" if name else matching_control
+
+    names = _value_list(latest.get("blockingPolicyNames")) or _value_list(policy.get("block_policy_names"))
+    if names:
+        return names[0]
+
+    return "No specific policy identified"
+
+
 def _main_rows(report: dict[str, Any], verdict: str) -> list[tuple[str, str]]:
     metrics = report.get("metrics") or {}
     cleanup = report.get("cleanup") or {}
@@ -247,8 +338,9 @@ def _main_rows(report: dict[str, Any], verdict: str) -> list[tuple[str, str]]:
     devdv001 = report.get("sign_in_log_evidence") or {} if str(report.get("scenario_id") or "").upper() == "DEV-DV-001" else {}
     devdv004 = report.get("evidence") or {} if str(report.get("scenario_id") or "").upper() == "DEV-DV-004" else {}
     evidence = report.get("evidence") or {}
-    local = evidence.get("local") or {}
-    tenant = (evidence.get("tenant") or {}).get("api") or {}
+    evidence_dict = evidence if isinstance(evidence, dict) else {}
+    local = evidence_dict.get("local") or {}
+    tenant = (evidence_dict.get("tenant") or {}).get("api") or {}
     alert = tenant.get("tenant_defender_alert") or {}
     timeline = tenant.get("tenant_timeline_evidence") or {}
     sid = str(report.get("display_id") or report.get("scenario_id") or "").upper()
@@ -266,6 +358,20 @@ def _main_rows(report: dict[str, Any], verdict: str) -> list[tuple[str, str]]:
             ("Denial reason", _first(attempt.get("error_message"), attempt.get("error_category"), default="Not applicable")),
             ("Cleanup completed", _yes_no(cleanup_completed)),
             ("Public URL stored", "No"),
+            ("Verdict basis", _verdict_reason(verdict, report)),
+        ]
+    if sid in {"ID-DV-004", "ID-C-004"}:
+        app_info = report.get("test_application") or {}
+        return [
+            ("OAuth grant created", _yes_no(metrics.get("oauth_grant_created"))),
+            ("Grant count", _first(metrics.get("oauth_grant_count"), metrics.get("grant_count"), default="0")),
+            ("Controlled app display name", _first(app_info.get("display_name"), default="Not recorded")),
+            ("App ID", _first(app_info.get("app_id"), default="Not recorded")),
+            ("Service principal ID", _first(app_info.get("service_principal_id"), default="Not recorded")),
+            ("Requested scope", _first(app_info.get("requested_scope"), default="Not recorded")),
+            ("Evidence source", _first(report.get("tenant_evidence_source"), default="Microsoft Graph oauth2PermissionGrant query")),
+            ("Tenant proof", _first(report.get("tenant_proof_text"), default="Not recorded")),
+            ("Manual browser observation", _first(report.get("observed_browser_outcome"), default="Not recorded")),
             ("Verdict basis", _verdict_reason(verdict, report)),
         ]
 
@@ -286,6 +392,53 @@ def _main_rows(report: dict[str, Any], verdict: str) -> list[tuple[str, str]]:
         if polling:
             rows.append(("Polls used", f"{_first(polling.get('poll_attempts'), default='0')} / {_first(polling.get('max_poll_attempts'), default='N/A')}"))
         return rows
+
+    if sid in {"ID-DV-002", "ID-C-002"}:
+        matched = report.get("matched_sign_in") or {}
+        policy = report.get("policy_attribution") or {}
+        metrics = report.get("metrics") or {}
+        tenant_found = bool(metrics.get("tenant_evidence_found") or policy.get("tenant_evidence_found") or matched)
+        policy_name = _first(policy.get("main_blocking_policy_name"), metrics.get("main_blocking_policy_name"), default="Not attributed")
+        return [
+            ("Tenant evidence found", "Yes" if tenant_found else "No"),
+            ("Matching sign-in found", "Yes" if matched else "No"),
+            ("Evidence time UTC", _first(matched.get("CreatedDateTime"), metrics.get("latest_matching_signin_time_utc"), default="Not recorded")),
+            ("User", _first(matched.get("UserPrincipalName"), (report.get("decoy_user") or {}).get("user_principal_name"), default="Not recorded")),
+            ("App", _first(matched.get("AppDisplayName"), default="Not recorded")),
+            ("Resource", _first(matched.get("ResourceDisplayName"), default="Not recorded")),
+            ("Status", _first(matched.get("Status"), default="Not recorded")),
+            ("CA status", _first(matched.get("ConditionalAccessStatus"), default="Not recorded")),
+            ("IP", _first(matched.get("IpAddress"), default="Not recorded")),
+            ("Request ID", _first(matched.get("RequestId"), matched.get("SignInId"), default="Not recorded")),
+            ("Main blocking policy", policy_name),
+            ("Token issued", _yes_no(metrics.get("token_issued"))),
+            ("Polls used", f"{_first(metrics.get('evidence_poll_attempts'), metrics.get('poll_attempts'), default='0')} / {_first(metrics.get('evidence_max_poll_attempts'), metrics.get('max_poll_attempts'), default='N/A')}"),
+            ("Verdict basis", _first(report.get("final_claim"), _verdict_reason(verdict, report))),
+        ]
+
+    if sid in {"ID-DV-005", "ID-C-005"}:
+        guest = report.get("guest_user") or {}
+        latest = report.get("latest_admin_portal_attempt") or {}
+        metrics = report.get("metrics") or {}
+        cleanup_completed = str(cleanup.get("status") or "").lower() == "completed" or bool(cleanup.get("cleanup_completed"))
+        tenant_found = bool(latest or report.get("admin_portal_evidence"))
+        return [
+            ("External guest", _first(guest.get("external_email"), guest.get("user_principal_name"), report.get("target"), default="Not recorded")),
+            ("Tenant evidence found", "Yes" if tenant_found else "No"),
+            ("Latest portal result", _first(latest.get("resultCategory"), metrics.get("latest_admin_portal_attempt_result"), default="PENDING")),
+            ("App", _first(latest.get("appDisplayName"), default="Not recorded")),
+            ("Resource", _first(latest.get("resourceDisplayName"), default="Not recorded")),
+            ("Evidence time UTC", _first(latest.get("createdDateTimeUtc"), default="Not recorded")),
+            ("CA status", _first(latest.get("conditionalAccessStatus"), default="Not recorded")),
+            ("Error code", _first(latest.get("statusErrorCode"), default="Not recorded")),
+            ("Failure/interruption reason", _first(latest.get("statusFailureReason"), default="Not recorded")),
+            ("Main blocking/interruption policy or control", _idc005_main_policy_control(report)),
+            ("Polls used", f"{_first(metrics.get('poll_attempts'), metrics.get('evidence_poll_count'), default='0')} / {_first(metrics.get('max_poll_attempts'), default='N/A')}"),
+            ("Total search time selected", _first(metrics.get("total_evidence_search_time_seconds"), default="Not recorded") + " seconds"),
+            ("Poll interval selected", _first(metrics.get("poll_interval_seconds"), default="Not recorded") + " seconds"),
+            ("Cleanup status", _first(cleanup.get("status"), "Completed" if cleanup_completed else "Pending", default="Not recorded")),
+            ("Verdict basis", _first(report.get("final_claim"), _verdict_reason(verdict, report))),
+        ]
 
     if devdv001:
         device = devdv001.get("device_detail") or {}
@@ -598,6 +751,83 @@ def _evidence_rows(report: dict[str, Any]) -> list[dict[str, str]]:
         rows.append({"source": "Effective Conditional Access policy", "found": _yes_no(mfa.get("effective_policy") != "None found"), "object": mfa.get("effective_policy") or "", "timestamp": _first(report.get("generated_at"), report.get("completed_utc")), "notes": mfa.get("conditional_access_result") or ""})
         rows.append({"source": "MFA evidence", "found": _yes_no(mfa.get("mfa_required") == "Yes" or mfa.get("mfa_completed") == "Yes"), "object": mfa.get("grant_control") or "MFA", "timestamp": _first(report.get("generated_at"), report.get("completed_utc")), "notes": mfa.get("conclusion") or ""})
         return rows
+    if sid in {"ID-DV-002", "ID-C-002"}:
+        matched = report.get("matched_sign_in") or {}
+        policy = report.get("policy_attribution") or {}
+        policy_name = _first(policy.get("main_blocking_policy_name"), (report.get("metrics") or {}).get("main_blocking_policy_name"), default="Not attributed")
+        rows.append(
+            {
+                "source": "Entra sign-in logs",
+                "found": "Yes" if matched else "No",
+                "object": _first(matched.get("UserPrincipalName"), (report.get("decoy_user") or {}).get("user_principal_name"), default="Decoy user"),
+                "timestamp": _first(matched.get("CreatedDateTime"), default="Not found"),
+                "notes": f"App: {_first(matched.get('AppDisplayName'), default='Not recorded')}; Resource: {_first(matched.get('ResourceDisplayName'), default='Not recorded')}; Status: {_first(matched.get('Status'), default='Not recorded')}; CA: {_first(matched.get('ConditionalAccessStatus'), default='Not recorded')}",
+            }
+        )
+        rows.append(
+            {
+                "source": "Conditional Access policy table",
+                "found": "Yes" if policy.get("main_blocking_policy_name") else "No",
+                "object": policy_name,
+                "timestamp": _first(matched.get("CreatedDateTime"), default="Not found"),
+                "notes": "Main blocking policy is selected from Result=Failure and Grant control=Block.",
+            }
+        )
+        return rows
+    if sid in {"ID-DV-005", "ID-C-005"}:
+        latest = report.get("latest_admin_portal_attempt") or {}
+        guest = report.get("guest_user") or {}
+        policy = report.get("policy_attribution") or {}
+        rows.append(
+            {
+                "source": "Entra admin/management portal sign-in",
+                "found": "Yes" if latest else "No",
+                "object": _first(guest.get("external_email"), guest.get("user_principal_name"), default="External guest"),
+                "timestamp": _first(latest.get("createdDateTimeUtc"), default="Not found"),
+                "notes": _first(latest.get("resultCategory"), default="No fresh portal attempt found"),
+            }
+        )
+        rows.append(
+            {
+                "source": "Latest portal attempt",
+                "found": "Yes" if latest else "No",
+                "object": _first(latest.get("appDisplayName"), default="Admin/management portal"),
+                "timestamp": _first(latest.get("createdDateTimeUtc"), default="Not found"),
+                "notes": f"Resource: {_first(latest.get('resourceDisplayName'), default='Not recorded')}; CA: {_first(latest.get('conditionalAccessStatus'), default='Not recorded')}; Error: {_first(latest.get('statusErrorCode'), default='Not recorded')}",
+            }
+        )
+        rows.append(
+            {
+                "source": "Policy/control attribution",
+                "found": "Yes" if latest.get("appliedConditionalAccessPolicies") or policy.get("policy_rows") else "No",
+                "object": _idc005_main_policy_control(report),
+                "timestamp": _first(latest.get("createdDateTimeUtc"), default="Not found"),
+                "notes": _first(latest.get("statusFailureReason"), default="No failure/interruption reason returned"),
+            }
+        )
+        return rows
+    if sid in {"ID-DV-004", "ID-C-004"}:
+        app_info = report.get("test_application") or {}
+        grant_created = bool(metrics.get("oauth_grant_created"))
+        rows.append(
+            {
+                "source": "Microsoft Graph oauth2PermissionGrant query",
+                "found": "Yes" if grant_created else "No",
+                "object": _first(app_info.get("display_name"), app_info.get("app_id"), default="Controlled OAuth test app"),
+                "timestamp": _first(metrics.get("last_poll_utc"), report.get("completed_utc"), report.get("generated_at")),
+                "notes": _first(report.get("tenant_proof_text"), default="OAuth grant evidence query completed."),
+            }
+        )
+        rows.append(
+            {
+                "source": "Manual browser observation",
+                "found": _first(report.get("observed_browser_outcome"), default="Not recorded"),
+                "object": _first((report.get("decoy_user") or {}).get("user_principal_name"), default="Decoy user"),
+                "timestamp": _first(report.get("completed_utc"), report.get("generated_at")),
+                "notes": "Supporting evidence only; tenant OAuth grant evidence is primary.",
+            }
+        )
+        return rows
     if dummy or mdca:
         rows.append({"source": "SharePoint/Graph", "found": _yes_no(bool(dummy)), "object": dummy.get("file_name") or "Dummy file", "timestamp": _first(report.get("generated_at"), report.get("generated_utc")), "notes": "Public URL stored: No"})
         rows.append({"source": "MDCA Alerts API", "found": _yes_no(bool(mdca.get("alert_detected") or mdca.get("governance_remediation_observed"))), "object": _first(metrics.get("matching_alert_title"), mdca.get("matching_alert_title"), default="No matching alert"), "timestamp": _first(metrics.get("alert_timestamp"), mdca.get("alert_timestamp"), default="Not found"), "notes": _first(metrics.get("detection_method"), mdca.get("detection_method"), default="None")})
@@ -608,7 +838,7 @@ def _evidence_rows(report: dict[str, Any]) -> list[dict[str, str]]:
         rows.append({"source": "Entra sign-in logs", "found": _yes_no(appdv004.get("signin_found")), "object": report.get("target_app") or "", "timestamp": appdv004.get("signin_timestamp") or "", "notes": appdv004.get("access_result") or ""})
         rows.append({"source": "Effective Conditional Access policy", "found": _yes_no(ca.get("effective_policy") != "None found"), "object": ca.get("effective_policy") or "", "timestamp": appdv004.get("signin_timestamp") or "", "notes": ca.get("conditional_access_result") or ""})
         rows.append({"source": "Device detail/compliance context", "found": _yes_no(appdv004.get("device_unmanaged_or_noncompliant")), "object": report.get("test_user") or "", "timestamp": appdv004.get("signin_timestamp") or "", "notes": appdv004.get("failure_reason") or "Device detail returned by sign-in log if available."})
-        rows.append({"source": "Graph API response", "found": _yes_no(bool((report.get("evidence") or {}).get("matched_signin"))), "object": "signIns", "timestamp": _first(report.get("completed_utc"), report.get("generated_at")), "notes": "Raw response hidden in technical details."})
+        rows.append({"source": "Graph API response", "found": _yes_no(bool(evidence_dict.get("matched_signin"))), "object": "signIns", "timestamp": _first(report.get("completed_utc"), report.get("generated_at")), "notes": "Raw response hidden in technical details."})
     if devdv001:
         target = report.get("target") or {}
         no_evidence = _is_devdv001_no_evidence(report)
@@ -640,6 +870,17 @@ def _cleanup(report: dict[str, Any]) -> dict[str, str]:
             "completed": _yes_no(completed),
             "remaining": "None" if completed else "Anonymous permission or dummy file may need review",
             "emergency": "No" if completed else "Yes",
+        }
+    if sid in {"ID-DV-005", "ID-C-005"}:
+        completed = data.get("cleanup_completed")
+        if completed is None:
+            completed = str(data.get("status") or data.get("cleanup_status") or "").lower() == "completed"
+        status = _first(data.get("status"), data.get("cleanup_status"), default="Pending")
+        return {
+            "required": "Yes",
+            "completed": _yes_no(completed),
+            "remaining": "None" if completed else status,
+            "emergency": "No" if completed else "Review exact guest cleanup",
         }
     required = data.get("decoy_user_cleanup_required")
     if required is None:
@@ -906,6 +1147,25 @@ def write_standard_html_report(report: dict[str, Any], html_path: Path, stdout: 
             "<table><thead><tr><th>Policy</th><th>Result</th><th>Grant control</th><th>Meaning</th></tr></thead>"
             f"<tbody>{policy_html}</tbody></table>"
         )
+    idc005_policy_section = ""
+    if scenario_id.upper() in {"ID-DV-005", "ID-C-005"}:
+        latest = report.get("latest_admin_portal_attempt") or {}
+        policy_rows = latest.get("appliedConditionalAccessPolicies") or report.get("policy_control_table") or []
+        rows_html = "".join(
+            "<tr>"
+            f"<td>{_safe(row.get('displayName') or row.get('policy_control_name'))}</td>"
+            f"<td>{_safe(row.get('result'))}</td>"
+            f"<td>{_safe(', '.join([str(x) for x in (row.get('enforcedGrantControls') or row.get('grantControls') or [])]))}</td>"
+            f"<td>{_safe(row.get('classification') or 'Not recorded')}</td>"
+            "</tr>"
+            for row in policy_rows
+            if isinstance(row, dict)
+        ) or '<tr><td colspan="4">No Conditional Access policy/control rows were returned for the latest portal attempt.</td></tr>'
+        idc005_policy_section = (
+            "<h2>Policy / Control Attribution</h2>"
+            "<table><thead><tr><th>Policy/control name</th><th>Result</th><th>Grant controls</th><th>Classification</th></tr></thead>"
+            f"<tbody>{rows_html}</tbody></table>"
+        )
     polling_rows = _polling_rows(report)
     polling_html = "".join(f"<tr><th>{_safe(k)}</th><td>{_safe(v)}</td></tr>" for k, v in polling_rows)
     polling_section = ""
@@ -1033,6 +1293,7 @@ pre {{ background:#101827; color:#e5edf7; padding:14px; border-radius:8px; overf
   <h2>Main Result</h2><table><tbody>{main_html}</tbody></table>
   {controlled_target_section}
   {effective_policy_section}
+  {idc005_policy_section}
   {polling_section}
   <h2>Why This Verdict Was Selected</h2><p>{_safe(_verdict_reason(verdict, report))}</p>
   <h2>Remediation / Recommendation</h2><ul>{rec_html}</ul>

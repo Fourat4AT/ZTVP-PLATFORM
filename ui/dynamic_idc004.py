@@ -9,6 +9,8 @@ from typing import Any
 
 import pandas as pd
 import streamlit as st
+from background_jobs import start_scenario_job
+from run_state import ACTIVE_STATUSES, request_cancel, selected_run_for_scenario
 
 
 STATUS_LABELS = {
@@ -368,15 +370,30 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
 <div class="ztvp-grid">
     {_metric("Status", display_status, tone)}
     {_metric("Risk", report.get("risk", "Unknown"), tone)}
-    {_metric("OAuth Grant Created", metrics.get("oauth_grant_created", False), "bad" if metrics.get("oauth_grant_created") else "good")}
-    {_metric("Grant Count", metrics.get("oauth_grant_count", 0), "bad" if metrics.get("oauth_grant_count", 0) else "good")}
+    {_metric("OAuth grant created", "Yes" if metrics.get("oauth_grant_created") else "No", "bad" if metrics.get("oauth_grant_created") else "good")}
+    {_metric("Grant count", metrics.get("oauth_grant_count", metrics.get("grant_count", 0)), "bad" if metrics.get("oauth_grant_created") else "good")}
 </div>
 """,
         unsafe_allow_html=True,
     )
 
-    st.markdown("#### Actual Decision")
-    st.write(report.get("executive_summary", ""))
+    app = report.get("test_application", {}) or {}
+
+    st.markdown("#### Tenant Evidence")
+    st.markdown(
+        f"""
+<div class="ztvp-grid-3">
+    {_metric("Controlled app display name", app.get("display_name", "N/A"))}
+    {_metric("App ID", app.get("app_id", "N/A"))}
+    {_metric("Service principal ID", app.get("service_principal_id", "N/A"))}
+    {_metric("Requested scope", app.get("requested_scope", "N/A"))}
+    {_metric("Evidence source", report.get("tenant_evidence_source", "Microsoft Graph oauth2PermissionGrant query"))}
+    {_metric("Polls used", f"{metrics.get('poll_attempts', 0)} / {metrics.get('max_poll_attempts', 'N/A')}")}
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+    st.write(report.get("tenant_proof_text") or report.get("executive_summary", ""))
     st.caption(report.get("final_claim", ""))
 
     st.markdown("#### Evidence Interpretation")
@@ -384,8 +401,9 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
         f"""
 <div class="ztvp-grid-3">
     {_metric("Evidence Quality", report.get("evidence_quality", "Unknown"))}
-    {_metric("Observed Browser Outcome", report.get("observed_browser_outcome", "N/A"))}
-    {_metric("Requested Scope", (report.get("test_application", {}) or {}).get("requested_scope", "N/A"))}
+    {_metric("Manual browser observation", report.get("observed_browser_outcome", "N/A"))}
+    {_metric("Total search time", f"{metrics.get('total_evidence_search_time_seconds', 'N/A')} seconds")}
+    {_metric("Poll interval", f"{metrics.get('poll_interval_seconds', 'N/A')} seconds")}
 </div>
 """,
         unsafe_allow_html=True,
@@ -457,6 +475,42 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
         st.code(stdout or "No PowerShell output captured.", language="text")
 
 
+def _render_background_run_summary(project_root: Path, run: dict) -> None:
+    status = str(run.get("status") or "").lower()
+    if status in ACTIVE_STATUSES:
+        st.info("ID-DV-004 OAuth grant evidence collection is running in Active Runs.")
+    else:
+        st.info("ID-DV-004 run state restored.")
+
+    cols = st.columns(4)
+    cols[0].metric("Phase", run.get("phase") or "Unknown")
+    cols[1].metric("Progress", f"{int(run.get('progress_percent') or 0)}%")
+    cols[2].metric("Polls", f"{run.get('poll_attempts') or 0} / {run.get('max_poll_attempts') or 'N/A'}")
+    cols[3].metric("Tenant evidence", run.get("tenant_evidence_status") or "Waiting")
+    st.caption(f"Evidence source: {run.get('current_evidence_source') or 'Microsoft Graph oauth2PermissionGrant query'}")
+    if run.get("current_message"):
+        st.write(run.get("current_message"))
+
+    col_active, col_cancel = st.columns(2)
+    if col_active.button("Open Active Runs", use_container_width=True, key=f"idc004_open_active_runs_{run.get('run_id') or 'latest'}"):
+        st.session_state["pending_navigation"] = {"main_navigation": "Active Runs", "pending_main_navigation": "Active Runs"}
+        st.session_state.pop("ztvp_dynamic_open_run_id", None)
+        st.rerun()
+    if status in ACTIVE_STATUSES and col_cancel.button("Cancel", use_container_width=True, key=f"idc004_cancel_active_run_{run.get('run_id') or 'latest'}"):
+        request_cancel(project_root, str(run.get("run_id") or ""))
+        st.rerun()
+
+    if status in ACTIVE_STATUSES:
+        return
+
+    report_path = Path(str(run.get("report_json_path") or run.get("report_path") or ""))
+    html_path = Path(str(run.get("report_html_path") or run.get("html_report_path") or ""))
+    if report_path.exists():
+        report = _load_json(report_path)
+        if report:
+            _render_report(report, report_path, html_path, "")
+
+
 def render_idc004_runner(project_root: Path) -> None:
     project_root = Path(project_root)
     _css()
@@ -488,6 +542,17 @@ def render_idc004_runner(project_root: Path) -> None:
     prepare_script = project_root / "powershell" / "Engines" / "DynamicValidation" / "Prepare-ZTVP-IDC004Decoy.ps1"
     invoke_script = project_root / "powershell" / "Engines" / "DynamicValidation" / "Invoke-ZTVP-IDC004.ps1"
     cleanup_script = project_root / "powershell" / "Engines" / "DynamicValidation" / "Cleanup-ZTVP-IDC004Decoy.ps1"
+
+    requested_run_id = st.session_state.get("ztvp_dynamic_open_run_id")
+    active_or_selected_run = selected_run_for_scenario(project_root, "ID-DV-004", requested_run_id)
+    if active_or_selected_run and str(active_or_selected_run.get("status") or "").lower() in ACTIVE_STATUSES:
+        _render_background_run_summary(project_root, active_or_selected_run)
+        return
+    if active_or_selected_run and (requested_run_id or str(active_or_selected_run.get("status") or "").lower() == "completed"):
+        _render_background_run_summary(project_root, active_or_selected_run)
+        st.session_state.pop("ztvp_dynamic_open_run_id", None)
+        st.session_state.pop("ztvp_dynamic_open_run_status", None)
+        st.session_state.pop("ztvp_dynamic_open_report_path", None)
 
     state = _load_json(state_path)
     decoy = state.get("decoy_user", {}) or {}
@@ -635,11 +700,40 @@ Microsoft should show admin approval required, consent blocked, or your organiza
             key="idc004_lookback",
         )
 
+        poll_cols = st.columns(3)
+        with poll_cols[0]:
+            log_wait_seconds = st.number_input(
+                "Log propagation wait seconds",
+                min_value=0,
+                max_value=600,
+                value=30,
+                step=10,
+                key="idc004_log_propagation_wait_seconds",
+            )
+        with poll_cols[1]:
+            total_search_seconds = st.number_input(
+                "Total evidence search time seconds",
+                min_value=30,
+                max_value=3600,
+                value=300,
+                step=30,
+                key="idc004_total_evidence_search_time_seconds",
+            )
+        with poll_cols[2]:
+            poll_interval_seconds = st.number_input(
+                "Poll interval seconds",
+                min_value=5,
+                max_value=300,
+                value=20,
+                step=5,
+                key="idc004_poll_interval_seconds",
+            )
+
         run_left, run_center, run_right = st.columns([0.24, 0.52, 0.24])
 
         with run_center:
             run_validation = st.button(
-                "Run OAuth Consent Evidence Validation",
+                "Check whether consent was allowed",
                 type="primary",
                 use_container_width=True,
             )
@@ -650,28 +744,21 @@ Microsoft should show admin approval required, consent blocked, or your organiza
             args = [
                 "-ObservedOutcome", observed_code,
                 "-LookbackMinutes", str(int(lookback)),
+                "-LogPropagationWaitSeconds", str(int(log_wait_seconds)),
+                "-TotalEvidenceSearchTimeSeconds", str(int(total_search_seconds)),
+                "-PollIntervalSeconds", str(int(poll_interval_seconds)),
             ]
-
-            with st.spinner("Checking OAuth permission grants, sign-in logs, and directory audit evidence..."):
-                completed = _run_powershell(project_root, invoke_script, args, timeout=1200)
-
-            report_path = project_root / "powershell" / "Reports" / "Dynamic" / "ID-C-004-result.json"
-            html_path = project_root / "powershell" / "Reports" / "Dynamic" / "Html" / "ID-C-004-result.html"
-
-            if completed.returncode != 0:
-                _alert("ID-DV-004 validation failed.", "bad")
-                error_output = f"Return code: {completed.returncode}\n\n--- STDERR ---\n{completed.stderr or ''}\n\n--- STDOUT ---\n{completed.stdout or ''}"
-                st.code(error_output.strip() or "No PowerShell output captured.", language="text")
-                return
-
-            if not report_path.exists():
-                _alert("Validation completed, but the JSON report was not found.", "warn")
-                st.code(completed.stdout, language="text")
-                return
-
-            report = _load_json(report_path)
-            _write_html_report(report, html_path)
-            _render_report(report, report_path, html_path, completed.stdout)
+            run = start_scenario_job(
+                project_root,
+                "ID-DV-004",
+                wait_minutes=max(1, int(total_search_seconds // 60) or 1),
+                poll_seconds=max(1, int(poll_interval_seconds)),
+                extra_args=args,
+                target=app.get("display_name") or "ID-DV-004 OAuth test app",
+            )
+            st.session_state["ztvp_dynamic_open_run_id"] = run.get("run_id")
+            _alert("ID-DV-004 evidence polling started as a background Active Run.", "good")
+            st.rerun()
 
     _step(4, "Clean up temporary user and app")
 

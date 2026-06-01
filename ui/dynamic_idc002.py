@@ -10,8 +10,12 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from background_jobs import start_scenario_job
+from run_state import ACTIVE_STATUSES, request_cancel, selected_run_for_scenario
+
 
 STATUS_LABELS = {
+    "PARTIAL_NO_MATCHING_SIGNIN": "PARTIAL - No Matching Sign-in",
     "PASS_DEVICE_CODE_BLOCKED_STRONG": "PASS — Device Code Blocked",
     "PASS_DEVICE_CODE_BLOCKED": "PASS — Device Code Blocked",
     "PASS_BLOCKED_TOKEN_ENDPOINT": "PASS — Token Not Issued",
@@ -25,17 +29,21 @@ STATUS_LABELS = {
 EVIDENCE_COLUMNS = [
     "CreatedDateTime",
     "EvidenceType",
+    "UserPrincipalName",
     "AppDisplayName",
     "ResourceDisplayName",
+    "Status",
     "AuthenticationProtocol",
     "ClientAppUsed",
     "DeviceCodeEvidence",
     "ConditionalAccessStatus",
     "BlockPolicyApplied",
+    "BlockPolicyNames",
     "Success",
     "Blocked",
     "TokenLikelyIssuedFromLogs",
     "IpAddress",
+    "RequestId",
     "Location",
 ]
 
@@ -116,6 +124,7 @@ def _clear_session_keys() -> None:
         "idc002_temp_password",
         "idc002_temp_upn",
         "idc002_decoy_upn",
+        "idc002_evidence_start_utc",
     ]:
         st.session_state.pop(key, None)
 
@@ -410,23 +419,28 @@ def _write_html_report(report: dict, html_path: Path) -> None:
         rows += f"""
 <tr>
 <td>{_safe(row.get("CreatedDateTime"))}</td>
+<td>{_safe(row.get("UserPrincipalName"))}</td>
 <td>{_safe(row.get("AppDisplayName"))}</td>
+<td>{_safe(row.get("ResourceDisplayName"))}</td>
+<td>{_safe(row.get("Status"))}</td>
 <td>{_safe(row.get("AuthenticationProtocol"))}</td>
 <td>{_safe(row.get("ConditionalAccessStatus"))}</td>
-<td>{_safe(row.get("BlockPolicyApplied"))}</td>
+<td>{_safe(row.get("BlockPolicyNames"))}</td>
 <td>{_safe(row.get("Success"))}</td>
 <td>{_safe(row.get("Blocked"))}</td>
 <td>{_safe(row.get("TokenLikelyIssuedFromLogs"))}</td>
 <td>{_safe(row.get("IpAddress"))}</td>
+<td>{_safe(row.get("RequestId"))}</td>
 </tr>
 """
 
     if not rows:
-        rows = '<tr><td colspan="9">No sign-in evidence found in the selected window.</td></tr>'
+        rows = '<tr><td colspan="13">No sign-in evidence found in the selected window.</td></tr>'
 
     warning_rows = "".join([f"<li>{_safe(w)}</li>" for w in warnings]) or "<li>No warnings were generated.</li>"
     policy_names = attribution.get("block_policy_names", []) or []
     policy_names_text = ", ".join([str(x) for x in policy_names]) if policy_names else "None attributed"
+    matched = report.get("matched_sign_in", {}) or {}
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     display_status = _friendly_status(report.get("status"))
 
@@ -502,19 +516,36 @@ pre {{ background:#0f172a; color:#e5e7eb; padding:18px; border-radius:16px; over
 </div>
 
 <div class="card">
+<h2>Latest Matched Sign-in</h2>
+<p><b>Time:</b> {_safe(matched.get("CreatedDateTime"))}</p>
+<p><b>User:</b> {_safe(matched.get("UserPrincipalName"))}</p>
+<p><b>App:</b> {_safe(matched.get("AppDisplayName"))}</p>
+<p><b>Resource:</b> {_safe(matched.get("ResourceDisplayName"))}</p>
+<p><b>Status:</b> {_safe(matched.get("Status"))}</p>
+<p><b>Conditional Access:</b> {_safe(matched.get("ConditionalAccessStatus"))}</p>
+<p><b>Request ID:</b> {_safe(matched.get("RequestId") or matched.get("SignInId"))}</p>
+<p><b>IP:</b> {_safe(matched.get("IpAddress"))}</p>
+<p><b>Blocking Policy:</b> {_safe(attribution.get("main_blocking_policy_name") or "Not attributed")}</p>
+</div>
+
+<div class="card">
 <h2>Sign-in Evidence</h2>
 <table>
 <thead>
 <tr>
 <th>Created</th>
+<th>User</th>
 <th>App</th>
+<th>Resource</th>
+<th>Status</th>
 <th>Protocol</th>
 <th>CA Status</th>
-<th>Block Policy</th>
+<th>Blocking Policy</th>
 <th>Success</th>
 <th>Blocked</th>
 <th>Token Likely Issued</th>
 <th>IP</th>
+<th>Request ID</th>
 </tr>
 </thead>
 <tbody>
@@ -610,12 +641,32 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
 <div class="ztvp-grid">
     {_metric("Target Sign-ins", metrics.get("target_signins_inside_lookback", 0))}
     {_metric("Device-Code Evidence", metrics.get("device_code_evidence_count", 0))}
-    {_metric("Enabled Block Policies", metrics.get("configured_enabled_block_policy_count", 0))}
-    {_metric("Report-only Policies", metrics.get("configured_report_only_block_policy_count", 0), "warn" if metrics.get("configured_report_only_block_policy_count", 0) else "")}
+    {_metric("Tenant Evidence Found", "Yes" if metrics.get("tenant_evidence_found") else "No", "good" if metrics.get("tenant_evidence_found") else "warn")}
+    {_metric("Matching Sign-in Found", "Yes" if metrics.get("matching_signin_found") else "No", "good" if metrics.get("matching_signin_found") else "warn")}
 </div>
 """,
         unsafe_allow_html=True,
     )
+
+    matched = report.get("matched_sign_in") or {}
+    if matched:
+        st.markdown("#### Matched Sign-in")
+        st.markdown(
+            f"""
+<div class="ztvp-grid">
+    {_metric("Time", matched.get("CreatedDateTime"))}
+    {_metric("User", matched.get("UserPrincipalName"))}
+    {_metric("App", matched.get("AppDisplayName"))}
+    {_metric("Resource", matched.get("ResourceDisplayName"))}
+    {_metric("Status", matched.get("Status"))}
+    {_metric("CA Status", matched.get("ConditionalAccessStatus"))}
+    {_metric("Request ID", matched.get("RequestId") or matched.get("SignInId"))}
+    {_metric("IP", matched.get("IpAddress"))}
+    {_metric("Blocking Policy", attribution.get("main_blocking_policy_name") or "Not attributed", "good" if attribution.get("main_blocking_policy_name") else "warn")}
+</div>
+""",
+            unsafe_allow_html=True,
+        )
 
     st.markdown("#### Sign-in Evidence")
 
@@ -664,6 +715,51 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
         st.code(stdout or "No PowerShell output captured.", language="text")
 
 
+def _render_background_run_summary(project_root: Path, run: dict) -> None:
+    status = str(run.get("status") or "").lower()
+    verdict = run.get("verdict") or "Pending"
+    phase = run.get("phase") or "Running"
+    message = run.get("current_message") or run.get("final_summary") or ""
+    polls = f"{run.get('poll_attempts', 0)} / {run.get('max_poll_attempts', 'N/A')}"
+
+    _alert(message or f"ID-DV-002 background run is {status}.", "good" if status == "completed" else "info")
+    st.markdown(
+        f"""
+<div class="ztvp-grid">
+    {_metric("Status", status.title() or "Unknown")}
+    {_metric("Verdict", verdict)}
+    {_metric("Phase", phase)}
+    {_metric("Polls", polls)}
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    col_active, col_cancel = st.columns(2)
+    with col_active:
+        if st.button("Open Active Runs", use_container_width=True, key=f"idc002_open_active_{run.get('run_id')}"):
+            st.session_state["pending_navigation"] = {
+                "main_navigation": "Active Runs",
+                "pending_main_navigation": "Active Runs",
+            }
+            st.rerun()
+            st.stop()
+    with col_cancel:
+        if status in ACTIVE_STATUSES:
+            if st.button("Cancel This Run", use_container_width=True, key=f"idc002_cancel_{run.get('run_id')}"):
+                request_cancel(project_root, str(run.get("run_id") or ""))
+                st.rerun()
+
+    report_path = Path(str(run.get("report_json_path") or run.get("report_path") or ""))
+    html_path = Path(str(run.get("report_html_path") or run.get("html_report_path") or ""))
+    if status == "completed" and report_path.exists():
+        report = _load_json(report_path)
+        if not html_path.exists():
+            html_path = report_path.with_suffix(".html")
+            _write_html_report(report, html_path)
+        _render_report(report, report_path, html_path, "")
+
+
 def render_idc002_runner(project_root: Path) -> None:
     project_root = Path(project_root)
     _css()
@@ -690,6 +786,19 @@ def render_idc002_runner(project_root: Path) -> None:
 
     state = _load_json(state_path)
     challenge = _load_json(public_challenge_path)
+    requested_run_id = st.session_state.get("ztvp_dynamic_open_run_id")
+    selected_run = selected_run_for_scenario(project_root, "ID-DV-002", str(requested_run_id or "") or None)
+
+    if selected_run and str(selected_run.get("status") or "").lower() in ACTIVE_STATUSES:
+        _render_background_run_summary(project_root, selected_run)
+        return
+
+    if selected_run and (requested_run_id or str(selected_run.get("status") or "").lower() == "completed"):
+        _render_background_run_summary(project_root, selected_run)
+        st.session_state.pop("ztvp_dynamic_open_run_id", None)
+        st.session_state.pop("ztvp_dynamic_open_run_status", None)
+        st.session_state.pop("ztvp_dynamic_open_report_path", None)
+        st.markdown("---")
 
     decoy = state.get("decoy_user", {}) or {}
     cleanup = state.get("cleanup", {}) or {}
@@ -861,6 +970,7 @@ Password: {_safe(st.session_state.get("idc002_temp_password"))}
                 else:
                     _alert("Device-code challenge created.", "good")
                     st.code(completed.stdout, language="text")
+                    st.session_state.pop("idc002_evidence_start_utc", None)
                     st.rerun()
 
     _step(3, "Complete the controlled device-code attempt")
@@ -879,6 +989,20 @@ Password: {_safe(st.session_state.get("idc002_temp_password"))}
         st.markdown("#### Use this Microsoft device login code")
         st.markdown(f'<div class="ztvp-big-code">{_safe(user_code)}</div>', unsafe_allow_html=True)
 
+        st.markdown("**Before opening Microsoft device login**")
+        mark_col, marker_col = st.columns([0.35, 0.65])
+        with mark_col:
+            if st.button("Mark Evidence Start Time", type="primary", use_container_width=True, key="idc002_mark_evidence_start"):
+                st.session_state["idc002_evidence_start_utc"] = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+                st.rerun()
+                st.stop()
+        with marker_col:
+            marked_at = st.session_state.get("idc002_evidence_start_utc")
+            if marked_at:
+                _alert(f"Evidence search will start at {marked_at}. Now complete the Microsoft device login, then run validation.", "good")
+            else:
+                _alert("Click Mark Evidence Start Time first. Then do the Microsoft device login. Then run validation.", "warn")
+
         st.markdown("**Open this Microsoft page**")
         st.markdown(f'<div class="ztvp-codebox">{_safe(verification_uri)}</div>', unsafe_allow_html=True)
 
@@ -888,7 +1012,7 @@ Password: {_safe(st.session_state.get("idc002_temp_password"))}
         st.markdown(f'<div class="ztvp-codebox">{_safe(decoy_upn)}</div>', unsafe_allow_html=True)
 
         _alert(
-            "Expected secure behavior: Microsoft Entra blocks the flow before a token is issued. After the browser shows the result, return here and run evidence validation.",
+            "Expected secure behavior: Microsoft Entra blocks the flow before a token is issued. Mark the evidence start time before the browser login so ZTVP searches the right sign-in window.",
             "info",
         )
 
@@ -924,35 +1048,28 @@ Password: {_safe(st.session_state.get("idc002_temp_password"))}
             )
 
         if st.button("Run Device-Code Enforcement Validation", type="primary", use_container_width=True):
-            with st.spinner("Polling token endpoint and collecting Microsoft Entra sign-in evidence..."):
-                completed = _run_powershell(
-                    project_root,
-                    invoke_script,
-                    [
-                        "-PollMinutes",
-                        str(int(poll_minutes)),
-                        "-LookbackMinutes",
-                        str(int(lookback_minutes)),
-                    ],
-                    timeout=1200,
-                )
-
-            report_path = project_root / "powershell" / "Reports" / "Dynamic" / "ID-C-002-result.json"
-            html_path = project_root / "powershell" / "Reports" / "Dynamic" / "Html" / "ID-C-002-result.html"
-
-            if completed.returncode != 0:
-                _alert("ID-DV-002 failed.", "bad")
-                st.code(completed.stderr or completed.stdout, language="text")
-                return
-
-            if not report_path.exists():
-                _alert("Validation completed, but the JSON report was not found.", "warn")
-                st.code(completed.stdout, language="text")
-                return
-
-            report = _load_json(report_path)
-            _write_html_report(report, html_path)
-            _render_report(report, report_path, html_path, completed.stdout)
+            evidence_start_utc = st.session_state.get("idc002_evidence_start_utc")
+            if not evidence_start_utc:
+                _alert("Mark Evidence Start Time before running validation, then complete the device-code login.", "warn")
+                st.stop()
+            run = start_scenario_job(
+                project_root,
+                "ID-DV-002",
+                wait_minutes=int(poll_minutes),
+                poll_seconds=15,
+                extra_args=[
+                    "-PollMinutes",
+                    str(int(poll_minutes)),
+                    "-LookbackMinutes",
+                    str(int(lookback_minutes)),
+                    "-EvidenceStartUtc",
+                    evidence_start_utc,
+                ],
+                target=decoy_upn,
+            )
+            _alert("ID-DV-002 is running in Active Runs. You can leave this page; polling will continue.", "good")
+            _render_background_run_summary(project_root, run)
+            st.rerun()
 
     _step(5, "Delete exact decoy and close test")
 

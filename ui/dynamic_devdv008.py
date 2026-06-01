@@ -812,7 +812,6 @@ DeviceEvents
         _render_active_run_summary(current_run, "DEV-DV-008")
         if st.button("Open Active Runs", use_container_width=True, key="devdv008_open_active_runs"):
             _open_active_runs()
-            st.rerun()
 
     if st.button("Start Tenant Evidence Analysis", use_container_width=True, key="devdv008_analyze"):
         state = _load_json(state_path) if state_path.exists() else {}
@@ -830,7 +829,6 @@ DeviceEvents
             st.caption(f"Run ID: {run.get('run_id')}")
             if st.button("Open Active Runs", use_container_width=True, key="devdv008_open_active_runs_after_start"):
                 _open_active_runs()
-                st.rerun()
 
     if report_path.exists():
         latest_report = _load_json(report_path)

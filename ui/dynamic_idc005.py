@@ -4,6 +4,7 @@ import html
 import json
 import re
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -36,7 +37,7 @@ STATUS_LABELS = {
 OBSERVED_OUTCOMES = {
     "Auto-detect from Entra sign-in evidence": "AUTO_DETECT",
     "Microsoft showed: access blocked / you cannot access this app": "ACCESS_BLOCKED",
-    "Guest reached Azure Portal or admin portal": "REACHED_ADMIN_PORTAL",
+    "Guest reached Entra/M365/Azure admin portal successfully": "REACHED_ADMIN_PORTAL",
     "Sign-in was interrupted before portal access decision": "SIGNIN_INTERRUPTED",
     "Invitation was not redeemed": "INVITATION_NOT_REDEEMED",
 }
@@ -62,6 +63,11 @@ def _safe(value: object) -> str:
     if value is None:
         return ""
     return html.escape(str(value))
+
+
+def _streamlit_key_suffix(*parts: object) -> str:
+    raw = "_".join(str(part or "") for part in parts).strip("_") or "default"
+    return re.sub(r"[^A-Za-z0-9_]+", "_", raw)[:80]
 
 
 def _friendly_status(status: object) -> str:
@@ -146,6 +152,67 @@ def _join_values(value: object) -> str:
     return str(value)
 
 
+def _list_values(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if value is None:
+        return []
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _policy_name(row: dict) -> str:
+    return str(row.get("displayName") or row.get("policy_control_name") or row.get("name") or "").strip()
+
+
+def _policy_controls(row: dict) -> list[str]:
+    return _list_values(row.get("enforcedGrantControls") or row.get("grantControls") or row.get("controls"))
+
+
+def _policy_result(row: dict) -> str:
+    return str(row.get("result") or row.get("classification") or "").strip().lower()
+
+
+def _main_policy_control(latest_attempt: dict, policy_attribution: dict | None = None) -> str:
+    policies = latest_attempt.get("appliedConditionalAccessPolicies") or []
+
+    for row in policies:
+        controls = _policy_controls(row)
+        if "failure" in _policy_result(row) and any("block" in control.lower() for control in controls):
+            name = _policy_name(row)
+            return f"{name} / Block" if name else "Block grant control"
+
+    interruption_terms = ("mfa", "multi-factor", "multifactor", "compliant", "compliance", "terms", "tou")
+    for row in policies:
+        controls = _policy_controls(row)
+        failed = "failure" in _policy_result(row)
+        matching_control = next((control for control in controls if any(term in control.lower() for term in interruption_terms)), "")
+        if failed and matching_control:
+            name = _policy_name(row)
+            return f"{name} / {matching_control}" if name else matching_control
+
+    policy_attribution = policy_attribution or {}
+    names = _list_values(latest_attempt.get("blockingPolicyNames")) or _list_values(policy_attribution.get("block_policy_names"))
+    if names:
+        return names[0]
+
+    return "No specific policy identified"
+
+
+def _policy_table_rows(latest_attempt: dict, report: dict | None = None) -> list[dict]:
+    report = report or {}
+    rows = latest_attempt.get("appliedConditionalAccessPolicies") or report.get("policy_control_table") or []
+    return [
+        {
+            "Policy/control name": row.get("displayName") or row.get("policy_control_name"),
+            "Result": row.get("result"),
+            "Grant controls": _join_values(row.get("enforcedGrantControls") or row.get("grantControls")),
+            "Classification": row.get("classification") or "Not recorded",
+        }
+        for row in rows
+    ]
+
+
 def _result_tone(result: object) -> str:
     text = str(result or "").upper()
 
@@ -194,7 +261,7 @@ def _simple_evidence_rows(evidence: list[dict]) -> list[dict]:
                 "status.errorCode": _row_value(row, "statusErrorCode", "StatusCode"),
                 "status.failureReason": _row_value(row, "statusFailureReason", "FailureReason"),
                 "conditionalAccessStatus": _row_value(row, "conditionalAccessStatus", "ConditionalAccessStatus"),
-                "appliedPolicyNames": _simple_policy_names(row),
+                "mainPolicyControl": _main_policy_control(row),
                 "ipAddress": _row_value(row, "ipAddress", "IpAddress"),
                 "matchedIdentifier": _row_value(row, "matchedIdentifier", "MatchedIdentifier"),
                 "resultCategory": _row_value(row, "resultCategory", "ResultCategory") or _simple_guest_result(row),
@@ -255,6 +322,7 @@ def _run_powershell(project_root: Path, script_path: Path, args: list[str], time
 
 
 def _render_background_run_summary(project_root: Path, run: dict) -> None:
+    run_key = _streamlit_key_suffix(run.get("run_id"), run.get("scenario_id"))
     status = str(run.get("status") or "").lower()
     st.info("ID-DV-005 validation is currently running." if status in ACTIVE_STATUSES else "ID-DV-005 run state restored.")
     cols = st.columns(4)
@@ -266,29 +334,70 @@ def _render_background_run_summary(project_root: Path, run: dict) -> None:
     if run.get("current_message"):
         st.write(run.get("current_message"))
     col_active, col_cancel = st.columns(2)
-    if col_active.button("Open Active Runs", use_container_width=True, key="idc005_open_active_runs"):
+    if col_active.button("Open Active Runs", use_container_width=True, key=f"idc005_open_active_runs_{run_key}"):
         st.session_state["pending_navigation"] = {"main_navigation": "Active Runs", "pending_main_navigation": "Active Runs"}
+        st.session_state.pop("ztvp_dynamic_open_run_id", None)
+        st.session_state.pop("ztvp_dynamic_open_run_status", None)
+        st.session_state.pop("ztvp_dynamic_open_report_path", None)
         st.rerun()
-    if status in ACTIVE_STATUSES and col_cancel.button("Cancel", use_container_width=True, key="idc005_cancel_active_run"):
+    if status in ACTIVE_STATUSES and col_cancel.button("Cancel", use_container_width=True, key=f"idc005_cancel_active_run_{run_key}"):
         request_cancel(project_root, str(run.get("run_id") or ""))
+        st.rerun()
+    if status in ACTIVE_STATUSES:
+        time.sleep(4)
         st.rerun()
     if status not in ACTIVE_STATUSES:
         st.markdown("#### Final output")
-        final_cols = st.columns(4)
-        final_cols[0].metric("Verdict", run.get("verdict") or "Unknown")
-        final_cols[1].metric("Risk", run.get("risk") or "Unknown")
-        final_cols[2].metric("Invitation attempted", "Yes" if run.get("guest_invitation_attempted") else "No")
-        final_cols[3].metric("Invitation succeeded", "Yes" if run.get("guest_invitation_succeeded") else "No")
-        st.write(f"Tenant blocked invite: {'Yes' if run.get('tenant_blocked_invite') else 'No'}")
         if run.get("error_category"):
             st.write(f"Error category: `{run.get('error_category')}`")
         html_path = Path(str(run.get("html_report_path") or run.get("report_html_path") or ""))
         json_path = Path(str(run.get("report_json_path") or run.get("report_path") or ""))
+        report = _load_json(json_path) if json_path.exists() else {}
+        metrics = report.get("metrics", {}) or {}
+        latest_attempt = report.get("latest_admin_portal_attempt", {}) or {}
+        guest = report.get("guest_user", {}) or {}
+        policy = report.get("policy_attribution", {}) or {}
+        main_policy = _main_policy_control(latest_attempt, policy)
+        latest_result = latest_attempt.get("resultCategory") or metrics.get("latest_admin_portal_attempt_result") or run.get("latest_portal_result") or "PENDING"
+
+        st.markdown(
+            f"""
+<div class="ztvp-grid-3">
+    {_metric("Verdict", run.get("verdict") or report.get("status") or "Unknown", _tone_for_status(run.get("verdict") or report.get("status")))}
+    {_metric("Risk", run.get("risk") or report.get("risk") or "Unknown", _tone_for_status(run.get("verdict") or report.get("status")))}
+    {_metric("Latest portal result", latest_result, _result_tone(latest_result))}
+</div>
+<div class="ztvp-grid-3">
+    {_metric("External guest", guest.get("external_email") or guest.get("user_principal_name") or report.get("target") or run.get("external_test_email") or "Not recorded")}
+    {_metric("App", latest_attempt.get("appDisplayName") or run.get("portal_app") or "Not recorded")}
+    {_metric("Resource", latest_attempt.get("resourceDisplayName") or run.get("portal_resource") or "Not recorded")}
+</div>
+<div class="ztvp-grid-3">
+    {_metric("CA status", latest_attempt.get("conditionalAccessStatus") or run.get("conditional_access_status") or "Not recorded")}
+    {_metric("Error code", latest_attempt.get("statusErrorCode") or run.get("status_error_code") or "Not recorded")}
+    {_metric("Evidence time UTC", latest_attempt.get("createdDateTimeUtc") or run.get("portal_evidence_time_utc") or "Not recorded")}
+</div>
+<div class="ztvp-grid-3">
+    {_metric("Reason", latest_attempt.get("statusFailureReason") or run.get("failure_reason") or "Not recorded")}
+    {_metric("Main blocking/interruption policy/control", main_policy)}
+    {_metric("Tenant evidence", run.get("tenant_evidence_status") or ("Found" if latest_attempt else "Not found"))}
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
+        policy_rows = _policy_table_rows(latest_attempt, report)
+        if policy_rows:
+            with st.expander("Detailed Conditional Access policy evaluation", expanded=False):
+                st.dataframe(pd.DataFrame(policy_rows), use_container_width=True, hide_index=True)
+
         c1, c2 = st.columns(2)
         if html_path.exists():
-            c1.download_button("View HTML report", html_path.read_bytes(), html_path.name, "text/html", use_container_width=True, key="idc005_final_html")
+            c1.download_button("View HTML report", html_path.read_bytes(), html_path.name, "text/html", use_container_width=True, key=f"idc005_final_html_{run_key}")
         if json_path.exists():
-            c2.download_button("Download JSON evidence", json_path.read_bytes(), json_path.name, "application/json", use_container_width=True, key="idc005_final_json")
+            c2.download_button("Download JSON evidence", json_path.read_bytes(), json_path.name, "application/json", use_container_width=True, key=f"idc005_final_json_{run_key}")
+        with st.expander("Advanced / Debug", expanded=False):
+            st.json(report or run)
 
 
 def _css() -> None:
@@ -473,9 +582,7 @@ def _write_html_report(report: dict, html_path: Path) -> None:
     window = report.get("validation_window", {}) or {}
     warning_rows = "".join([f"<li>{_safe(w)}</li>" for w in warnings]) or "<li>No warnings were generated.</li>"
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    policy_names = policy.get("block_policy_names", []) or []
-    all_policy_names = policy.get("all_policy_names", []) or []
-    policy_text = ", ".join([str(x) for x in policy_names]) or ", ".join([str(x) for x in all_policy_names]) or "No policy names present in matching admin portal rows."
+    main_policy = _main_policy_control(latest_attempt, policy)
 
     html_doc = f"""<!doctype html>
 <html>
@@ -578,7 +685,7 @@ pre {{ background:#0f172a; color:#e5e7eb; padding:18px; border-radius:16px; over
 <div class="card">
 <h2>7. Policy Attribution</h2>
 <p><b>Block policy applied:</b> {_safe(policy.get("block_policy_applied"))}</p>
-<p><b>Policy names:</b> {_safe(policy_text)}</p>
+<p><b>Main blocking/interruption policy or control:</b> {_safe(main_policy)}</p>
 </div>
 
 <div class="card">
@@ -610,6 +717,7 @@ Generated by Zero Trust Validation Platform on {generated_at}.
 
 
 def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str) -> None:
+    report_key = _streamlit_key_suffix(report.get("run_id"), report.get("scenario_id"), report_path.stem)
     metrics = report.get("metrics", {}) or {}
     admin_evidence = _as_records(report, "admin_portal_evidence")
     invitation_evidence = _as_records(report, "invitation_redemption_evidence")
@@ -624,38 +732,39 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
     latest_success = report.get("latest_successful_admin_portal_attempt", {}) or {}
     latest_block = report.get("latest_blocked_admin_portal_attempt", {}) or {}
     browser = report.get("browser_observation", {}) or {}
+    main_policy = _main_policy_control(latest_attempt, policy)
 
     _alert("External guest admin portal validation completed.", "good" if tone == "good" else tone)
 
     if report.get("status") == "PARTIAL_CONFLICT_BROWSER_REACHED_TELEMETRY_BLOCKED":
         _alert(
-            "Conflict: the consultant recorded that the guest reached Azure/admin portal, but the latest matching Entra admin portal telemetry is blocked or interrupted. Do not treat this as PASS; start a fresh retest window and repeat the portal attempt.",
+            "Conflict: the consultant recorded that the guest reached an admin portal, but the latest matching Entra admin portal telemetry is blocked or interrupted. Treat this as inconclusive until a fresh retest proves whether Conditional Access blocked the portal login.",
             "warn",
         )
     elif latest_attempt.get("resultCategory") == "SUCCESS":
         _alert(
-            "Simple result: latest matching Azure Portal / Azure Resource Manager telemetry succeeded. This is a FAIL for this scenario.",
+            "Verdict meaning: the latest matching admin/management portal telemetry succeeded. If the guest reached the admin portal successfully, this is FAIL / Policy gap.",
             "bad",
         )
     elif latest_attempt.get("resultCategory") == "BLOCKED_OR_INTERRUPTED":
         _alert(
-            "Simple result: latest matching admin portal telemetry was blocked or interrupted.",
+            "Verdict meaning: Conditional Access blocked or interrupted the guest admin portal sign-in. Strong PASS / Protected requires Entra sign-in evidence showing the block by the expected guest/admin portal policy, for example CA-P2-EXT-Guests-AdminPortals-Block.",
             "good",
         )
     elif report.get("status") == "FAIL_BROWSER_OBSERVED_TELEMETRY_PENDING":
         _alert(
-            "Telemetry pending: the browser observation says the guest reached Azure/admin portal, so ZTVP is treating this as a FAIL until fresh telemetry proves otherwise.",
+            "Telemetry pending: the browser observation says the guest reached an admin portal. Treat this as FAIL / Policy gap unless fresh Entra telemetry proves Conditional Access blocked or interrupted the portal sign-in.",
             "bad",
         )
     else:
         if invitation_evidence and not admin_evidence:
             _alert(
-                "Invitation evidence found, but no Azure/admin portal access telemetry found. Invitation rows are displayed below but do not decide PASS or FAIL.",
+                "Invitation evidence found, but no admin portal access telemetry found. Guest sign-in without portal block evidence, or only seeing no subscription/no resources, is inconclusive or weak evidence, not strong PASS.",
                 "warn",
             )
         else:
             _alert(
-                "ZTVP did not find admin portal telemetry in the active decision window.",
+                "ZTVP did not find admin portal telemetry in the active decision window. This is inconclusive or weak evidence, not strong PASS.",
                 "warn",
             )
 
@@ -705,7 +814,12 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
 <div class="ztvp-grid-3">
     {_metric("Evidence Quality", report.get("evidence_quality", "Unknown"))}
     {_metric("Browser Outcome", metrics.get("browser_outcome", report.get("observed_browser_outcome", "N/A")))}
-    {_metric("Evidence Polls", metrics.get("evidence_poll_count", 0))}
+    {_metric("Polls Used", f"{metrics.get('poll_attempts', metrics.get('evidence_poll_count', 0))} / {metrics.get('max_poll_attempts', 'N/A')}")}
+</div>
+<div class="ztvp-grid-3">
+    {_metric("Total Search Seconds", metrics.get("total_evidence_search_time_seconds", "N/A"))}
+    {_metric("Poll Interval Seconds", metrics.get("poll_interval_seconds", "N/A"))}
+    {_metric("Log Propagation Wait", metrics.get("log_propagation_wait_seconds", "N/A"))}
 </div>
 """,
         unsafe_allow_html=True,
@@ -730,9 +844,25 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
     {_metric("CA Status", latest_attempt.get("conditionalAccessStatus", "N/A"))}
     {_metric("Matched By", latest_attempt.get("matchedIdentifier", "N/A"))}
 </div>
+<div class="ztvp-grid-3">
+    {_metric("Error Code", latest_attempt.get("statusErrorCode", "N/A"))}
+    {_metric("Failure / Interruption Reason", latest_attempt.get("statusFailureReason", "N/A"))}
+    {_metric("Main Blocking / Interruption Policy", main_policy)}
+</div>
 """,
             unsafe_allow_html=True,
         )
+        policy_rows = _policy_table_rows(latest_attempt, report)
+        if policy_rows:
+            with st.expander("Detailed Conditional Access policy evaluation", expanded=False):
+                st.dataframe(pd.DataFrame(policy_rows), use_container_width=True, hide_index=True)
+            report_only = [
+                row.get("Policy/control name")
+                for row in policy_rows
+                if str(row.get("Classification") or "").lower() == "report-only match"
+            ]
+            if report_only:
+                _alert(f"Report-only matched policies: {', '.join([str(item) for item in report_only if item])}", "info")
     else:
         _alert("No Azure/admin portal telemetry was found in the active decision window.", "warn")
 
@@ -743,9 +873,8 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
         )
 
     if latest_block:
-        names = _join_values(latest_block.get("blockingPolicyNames") or latest_block.get("appliedPolicyNames"))
         _alert(
-            f"Latest blocked/interrupted portal row: {latest_block.get('createdDateTimeUtc', 'N/A')} | CA {latest_block.get('conditionalAccessStatus', 'N/A')} | Policies: {names or 'No policy name in row'}",
+            f"Latest blocked/interrupted portal row: {latest_block.get('createdDateTimeUtc', 'N/A')} | CA {latest_block.get('conditionalAccessStatus', 'N/A')} | Main policy/control: {_main_policy_control(latest_block, policy)} | Expected example: CA-P2-EXT-Guests-AdminPortals-Block",
             "good" if report.get("status", "").startswith("PASS") else "warn",
         )
 
@@ -808,16 +937,16 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
         "info",
     )
 
-    names = policy.get("block_policy_names", []) or []
-    all_names = policy.get("all_policy_names", []) or []
-    names_text = ", ".join([str(x) for x in names]) or ", ".join([str(x) for x in all_names]) or "No policy names present in matching admin portal rows"
-
     st.markdown("#### 7. Policy Attribution")
+    _alert(
+        "Verdict guide: CA blocked/interrupted guest admin portal sign-in = PASS / Protected. Guest reaches admin portal successfully = FAIL / Policy gap. Guest signs in but only sees no subscription/no resources = inconclusive or weak evidence. Strong PASS requires Entra sign-in evidence showing Conditional Access block by the guest/admin portal policy.",
+        "info",
+    )
     st.markdown(
         f"""
 <div class="ztvp-grid-3">
     {_metric("Block Policy Applied", "Yes" if policy.get("block_policy_applied") else "No", "good" if policy.get("block_policy_applied") else "warn")}
-    {_metric("Policy Names", names_text)}
+    {_metric("Main Policy / Control", main_policy)}
     {_metric("Blocked Rows", policy.get("blocked_admin_portal_evidence_count", 0))}
 </div>
 """,
@@ -850,7 +979,7 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
         with st.expander("Other guest sign-in evidence"):
             st.dataframe(pd.DataFrame(_simple_evidence_rows(other_evidence)), use_container_width=True, hide_index=True)
 
-    with st.expander("Raw categorized evidence"):
+    with st.expander("Advanced / Debug - categorized evidence", expanded=False):
         st.json(
             {
                 "admin_portal_evidence": admin_evidence,
@@ -866,26 +995,28 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
 
     with col_json:
         st.download_button(
-            "Download JSON Report",
+            "Download JSON evidence",
             data=report_path.read_bytes(),
             file_name="ID-DV-005-result.json",
             mime="application/json",
             use_container_width=True,
+            key=f"idc005_report_json_{report_key}",
         )
 
     with col_html:
         st.download_button(
-            "Download HTML Report",
+            "View HTML report",
             data=html_path.read_bytes(),
             file_name="ID-DV-005-result.html",
             mime="text/html",
             use_container_width=True,
+            key=f"idc005_report_html_{report_key}",
         )
 
-    with st.expander("View full evidence JSON"):
+    with st.expander("Advanced / Debug - full evidence JSON", expanded=False):
         st.json(report)
 
-    with st.expander("PowerShell output"):
+    with st.expander("Advanced / Debug - PowerShell output", expanded=False):
         st.code(stdout or "No PowerShell output captured.", language="text")
 
 
@@ -916,7 +1047,10 @@ def render_idc005_runner(project_root: Path) -> None:
         return
     elif active_or_selected_run and requested_run_id:
         _render_background_run_summary(project_root, active_or_selected_run)
-        st.markdown("---")
+        st.session_state.pop("ztvp_dynamic_open_run_id", None)
+        st.session_state.pop("ztvp_dynamic_open_run_status", None)
+        st.session_state.pop("ztvp_dynamic_open_report_path", None)
+        return
 
     state = _load_json(state_path)
     guest = state.get("guest_user", {}) or {}
@@ -963,7 +1097,7 @@ def render_idc005_runner(project_root: Path) -> None:
 
             redirect_url = st.text_input(
                 "Invitation redirect URL",
-                value="https://portal.azure.com",
+                value="https://entra.microsoft.com",
                 key="idc005_redirect_url",
             )
 
@@ -982,7 +1116,7 @@ def render_idc005_runner(project_root: Path) -> None:
                 args = [
                     "-ExternalEmail", external_email.strip(),
                     "-GuestDisplayNamePrefix", display_prefix.strip() or "ZTVP ID-DV-005 External Guest",
-                    "-InviteRedirectUrl", redirect_url.strip() or "https://portal.azure.com",
+                    "-InviteRedirectUrl", redirect_url.strip() or "https://entra.microsoft.com",
                 ]
 
                 if send_email:
@@ -1012,10 +1146,15 @@ def render_idc005_runner(project_root: Path) -> None:
     if not has_active:
         _alert("Invite an external guest first.", "warn")
     else:
-        _alert("Open the invitation redeem URL in a private browser. Sign in with the external account, not your tenant admin account.", "info")
+        _alert(
+            "Flow: redeem the guest invitation first. Then click Start fresh retest window before portal login. Then open an admin/management portal as the guest. Then collect Entra evidence.",
+            "info",
+        )
 
         redeem_url = invitation.get("invite_redeem_url", "")
-        portal_url = "https://portal.azure.com"
+        portal_url = "https://entra.microsoft.com"
+        m365_admin_url = "https://admin.microsoft.com"
+        azure_portal_url = "https://portal.azure.com"
 
         st.markdown("**Invitation redeem URL**")
         st.markdown(f'<div class="ztvp-codebox">{_safe(redeem_url)}</div>', unsafe_allow_html=True)
@@ -1023,9 +1162,14 @@ def render_idc005_runner(project_root: Path) -> None:
         if redeem_url:
             st.markdown(f'<a href="{_safe(redeem_url)}" target="_blank">Open guest invitation redeem URL</a>', unsafe_allow_html=True)
 
-        st.markdown("**Admin portal URL to test after redemption**")
+        st.markdown("**Primary admin portal URL to test after redemption and fresh retest window**")
         st.markdown(f'<div class="ztvp-codebox">{_safe(portal_url)}</div>', unsafe_allow_html=True)
-        st.markdown(f'<a href="{_safe(portal_url)}" target="_blank">Open Azure Portal</a>', unsafe_allow_html=True)
+        st.markdown(f'<a href="{_safe(portal_url)}" target="_blank">Open Entra admin center</a>', unsafe_allow_html=True)
+
+        st.markdown("**Optional management portal URLs**")
+        st.markdown(f'<div class="ztvp-codebox">{_safe(m365_admin_url)}<br>{_safe(azure_portal_url)}</div>', unsafe_allow_html=True)
+        st.markdown(f'<a href="{_safe(m365_admin_url)}" target="_blank">Open Microsoft 365 admin center</a>', unsafe_allow_html=True)
+        st.markdown(f'<a href="{_safe(azure_portal_url)}" target="_blank">Open Azure Portal</a>', unsafe_allow_html=True)
 
         st.markdown("#### Fresh retest window")
 
@@ -1039,14 +1183,16 @@ def render_idc005_runner(project_root: Path) -> None:
             )
         else:
             _alert(
-                "No fresh retest window has been marked yet. For remediation retests, click the button below before opening Azure Portal again.",
+                "No fresh retest window has been marked yet. Click the button below after redeeming the invitation, but before opening Entra admin center, Microsoft 365 admin center, or Azure Portal.",
                 "warn",
             )
 
-        if st.button("Start Fresh Retest Window Now", use_container_width=True, key="idc005_start_fresh_retest_window"):
+        st.caption("Click this after redeeming the guest invitation, but before opening the admin/management portal.")
+
+        if st.button("Start fresh retest window before portal attempt", use_container_width=True, key="idc005_start_fresh_retest_window"):
             saved_window = _save_idc005_attempt_window(project_root)
             _alert(
-                f"Fresh retest window started at {saved_window.get('attempt_started_at_utc')}. Now open Azure Portal again as the guest, then collect evidence.",
+                f"Fresh retest window started at {saved_window.get('attempt_started_at_utc')}. Now open Entra admin center, Microsoft 365 admin center, or Azure Portal as the guest, then collect evidence.",
                 "good",
             )
             st.rerun()
@@ -1057,7 +1203,7 @@ def render_idc005_runner(project_root: Path) -> None:
         _alert("This step unlocks after the external guest is invited.", "warn")
     else:
         _alert(
-            "Easy mode: after redeeming the invitation and opening Azure Portal as the external guest, leave Auto-detect selected. ZTVP will decide from Entra sign-in logs.",
+            "Easy mode: after redeeming the invitation, starting the fresh retest window, and opening an admin/management portal as the external guest, leave Auto-detect selected. ZTVP will decide from Entra sign-in logs.",
             "info",
         )
 
@@ -1084,7 +1230,7 @@ def render_idc005_runner(project_root: Path) -> None:
 
         if OBSERVED_OUTCOMES[outcome_label] == "REACHED_ADMIN_PORTAL":
             _alert(
-                "This manual observation will be treated as evidence. ZTVP will not output PASS unless Entra admin portal telemetry supports a block after this observation.",
+                "This manual observation means the guest appeared to reach an admin portal. ZTVP should only return strong PASS if Entra sign-in evidence shows Conditional Access blocked/interrupted the guest admin portal sign-in after the fresh retest window.",
                 "warn",
             )
 
@@ -1095,23 +1241,48 @@ def render_idc005_runner(project_root: Path) -> None:
                 "Evidence lookback minutes",
                 min_value=15,
                 max_value=720,
-                value=240,
+                value=30,
                 step=15,
                 key="idc005_lookback",
             )
 
         with col2:
-            wait_seconds = st.number_input(
-                "Evidence polling wait seconds",
-                min_value=0,
+            total_search_seconds = st.number_input(
+                "Total evidence search time seconds",
+                min_value=30,
+                max_value=3600,
+                value=300,
+                step=30,
+                help="Maximum time ZTVP keeps searching Entra sign-in logs after you start evidence collection.",
+                key="idc005_total_evidence_search_seconds",
+            )
+
+        col3, col4 = st.columns(2)
+
+        with col3:
+            poll_interval_seconds = st.number_input(
+                "Poll interval seconds",
+                min_value=5,
                 max_value=300,
+                value=20,
+                step=5,
+                help="How often ZTVP retries during the total search time.",
+                key="idc005_poll_interval_seconds",
+            )
+
+        with col4:
+            log_wait_seconds = st.number_input(
+                "Optional log propagation wait seconds",
+                min_value=0,
+                max_value=600,
                 value=60,
-                step=15,
-                key="idc005_wait_seconds",
+                step=10,
+                help="Initial wait before the first log search, useful because Entra logs can appear late.",
+                key="idc005_log_propagation_wait_seconds",
             )
 
         _alert(
-            "Next action: collect Entra sign-in evidence and let ZTVP decide whether the guest was blocked or reached the admin portal.",
+            "Next action: collect Entra sign-in evidence. Strong PASS requires Conditional Access block/interruption evidence from the guest/admin portal policy, for example CA-P2-EXT-Guests-AdminPortals-Block.",
             "info",
         )
 
@@ -1131,7 +1302,10 @@ def render_idc005_runner(project_root: Path) -> None:
             args = [
                 "-ObservedOutcome", observed_code,
                 "-LookbackMinutes", str(int(lookback)),
-                "-EvidenceWaitSeconds", str(int(wait_seconds)),
+                "-EvidenceWaitSeconds", str(int(total_search_seconds)),
+                "-TotalEvidenceSearchTimeSeconds", str(int(total_search_seconds)),
+                "-PollIntervalSeconds", str(int(poll_interval_seconds)),
+                "-LogPropagationWaitSeconds", str(int(log_wait_seconds)),
             ]
 
             attempt_window = _load_idc005_attempt_window(project_root)
@@ -1144,7 +1318,7 @@ def render_idc005_runner(project_root: Path) -> None:
                 project_root,
                 "ID-DV-005",
                 wait_minutes=max(1, int(lookback)),
-                poll_seconds=max(0, int(wait_seconds)),
+                poll_seconds=max(1, int(poll_interval_seconds)),
                 extra_args=args,
                 target=external.get("external_email") or guest.get("user_principal_name") or "ID-DV-005 guest",
             )

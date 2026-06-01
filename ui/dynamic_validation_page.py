@@ -1016,6 +1016,9 @@ def render_dynamic_validation_page(
     render_idc001_runner=None,
     **kwargs,
 ) -> None:
+    if st.session_state.get("main_navigation") not in (None, "Dynamic Validation"):
+        return
+    st.session_state["ztvp_rendering_page"] = "Dynamic Validation"
     _css()
 
     project_root = Path(project_root or Path.cwd())

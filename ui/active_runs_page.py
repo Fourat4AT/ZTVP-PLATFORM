@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import html
 import json
+import time
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
 import streamlit as st
 
 from background_jobs import SCENARIOS as BACKGROUND_SCENARIOS, is_live, start_scenario_job
@@ -460,6 +460,35 @@ def _enrich_run(project_root: Path, run: dict) -> dict:
             enriched["access_without_mfa"] = mfa.get("access_without_mfa")
             enriched["effective_policy"] = mfa.get("effective_policy")
             enriched["conditional_access_status"] = mfa.get("conditional_access_result")
+        elif scenario_id in {"ID-DV-003", "ID-C-003"}:
+            metrics = report.get("metrics") or {}
+            policy = report.get("policy_attribution") or {}
+            mailbox = report.get("mailbox_readiness") or {}
+            mailbox_final = mailbox.get("final") if isinstance(mailbox, dict) else {}
+            if not isinstance(mailbox_final, dict):
+                mailbox_final = {}
+            enriched["mailbox_ready"] = _first_value(enriched.get("mailbox_ready"), metrics.get("mailbox_ready"))
+            enriched["protocols_tested"] = _first_value(enriched.get("protocols_tested"), metrics.get("protocols_tested"))
+            enriched["protocol_success_count"] = _first_value(enriched.get("protocol_success_count"), metrics.get("protocol_success_count"), "0")
+            enriched["protocol_blocked_or_denied_count"] = _first_value(enriched.get("protocol_blocked_or_denied_count"), metrics.get("protocol_blocked_or_denied_count"), "0")
+            enriched["legacy_signin_evidence_count"] = _first_value(enriched.get("legacy_signin_evidence_count"), metrics.get("legacy_signin_evidence_count"), "0")
+            enriched["legacy_block_policy_applied"] = _first_value(enriched.get("legacy_block_policy_applied"), policy.get("legacy_block_policy_applied"))
+            enriched["legacy_block_policy_names"] = _first_value(enriched.get("legacy_block_policy_names"), ", ".join([str(name) for name in (policy.get("legacy_block_policy_names") or [])]))
+            enriched["mailbox_mail"] = _first_value(enriched.get("mailbox_mail"), mailbox_final.get("mail"))
+            enriched["tenant_evidence_status"] = _first_value(enriched.get("tenant_evidence_status"), "Found" if metrics.get("legacy_signin_evidence_count") or metrics.get("entra_signins_retrieved") or metrics.get("legacy_block_policy_names_count") else "Not found")
+            enriched["current_evidence_source"] = _first_value(enriched.get("current_evidence_source"), "legacy protocol tests + Entra sign-in logs")
+        elif scenario_id in {"ID-DV-002", "ID-C-002"}:
+            metrics = report.get("metrics") or {}
+            token = report.get("token_polling") or {}
+            policy = report.get("policy_attribution") or {}
+            enriched["token_outcome"] = _first_value(enriched.get("token_outcome"), token.get("token_outcome"))
+            enriched["token_issued"] = _first_value(enriched.get("token_issued"), metrics.get("token_issued"))
+            enriched["device_code_evidence_count"] = _first_value(enriched.get("device_code_evidence_count"), metrics.get("device_code_evidence_count"), "0")
+            enriched["blocked_evidence_count"] = _first_value(enriched.get("blocked_evidence_count"), metrics.get("blocked_evidence_count"), "0")
+            enriched["block_policy_names"] = _first_value(enriched.get("block_policy_names"), ", ".join([str(name) for name in (policy.get("block_policy_names") or [])]))
+            enriched["poll_attempts"] = _first_value(enriched.get("poll_attempts"), metrics.get("poll_attempts"), metrics.get("poll_count"))
+            enriched["tenant_evidence_status"] = _first_value(enriched.get("tenant_evidence_status"), "Found" if metrics.get("token_issued") or metrics.get("device_code_evidence_count") or metrics.get("blocked_evidence_count") else "Not found")
+            enriched["current_evidence_source"] = _first_value(enriched.get("current_evidence_source"), "Token endpoint + Entra sign-in logs")
         elif scenario_id == "APP-DV-003":
             metrics = report.get("metrics") or {}
             mdca = report.get("mdca_detection_evidence") or {}
@@ -473,6 +502,39 @@ def _enrich_run(project_root: Path, run: dict) -> dict:
                 enriched["current_message"] = "MDCA evidence found. Polling stopped early and cleanup completed."
             if not enriched.get("detection_method"):
                 enriched["detection_method"] = metrics.get("detection_method") or mdca.get("detection_method")
+        elif scenario_id in {"ID-DV-005", "ID-C-005"}:
+            metrics = report.get("metrics") or {}
+            latest = report.get("latest_admin_portal_attempt") or {}
+            policy = report.get("policy_attribution") or {}
+            guest = report.get("guest_user") or {}
+            enriched["external_test_email"] = _first_value(enriched.get("external_test_email"), guest.get("external_email"), guest.get("user_principal_name"))
+            enriched["latest_portal_result"] = _first_value(latest.get("resultCategory"), metrics.get("latest_admin_portal_attempt_result"))
+            enriched["portal_app"] = _first_value(latest.get("appDisplayName"))
+            enriched["portal_resource"] = _first_value(latest.get("resourceDisplayName"))
+            enriched["portal_evidence_time_utc"] = _first_value(latest.get("createdDateTimeUtc"))
+            enriched["conditional_access_status"] = _first_value(latest.get("conditionalAccessStatus"))
+            enriched["status_error_code"] = _first_value(latest.get("statusErrorCode"))
+            enriched["failure_reason"] = _first_value(latest.get("statusFailureReason"))
+            enriched["blocking_policy"] = ", ".join([str(x) for x in (latest.get("blockingPolicyNames") or policy.get("block_policy_names") or []) if str(x).strip()])
+            enriched["poll_attempts"] = metrics.get("poll_attempts") or metrics.get("evidence_poll_count") or enriched.get("poll_attempts")
+            enriched["max_poll_attempts"] = metrics.get("max_poll_attempts") or enriched.get("max_poll_attempts")
+            enriched["total_evidence_search_time_seconds"] = metrics.get("total_evidence_search_time_seconds") or enriched.get("total_evidence_search_time_seconds")
+            enriched["retry_interval_seconds"] = metrics.get("poll_interval_seconds") or enriched.get("retry_interval_seconds")
+        elif scenario_id in {"ID-DV-004", "ID-C-004"}:
+            metrics = report.get("metrics") or {}
+            app = report.get("test_application") or {}
+            enriched["target_app"] = _first_value(enriched.get("target_app"), app.get("display_name"))
+            enriched["app_id"] = _first_value(enriched.get("app_id"), app.get("app_id"))
+            enriched["service_principal_id"] = _first_value(enriched.get("service_principal_id"), app.get("service_principal_id"))
+            enriched["requested_scope"] = _first_value(enriched.get("requested_scope"), app.get("requested_scope"))
+            enriched["oauth_grant_created"] = _first_value(enriched.get("oauth_grant_created"), "Yes" if metrics.get("oauth_grant_created") else "No")
+            enriched["grant_count"] = _first_value(enriched.get("grant_count"), metrics.get("oauth_grant_count"), metrics.get("grant_count"), "0")
+            enriched["poll_attempts"] = metrics.get("poll_attempts") or enriched.get("poll_attempts")
+            enriched["max_poll_attempts"] = metrics.get("max_poll_attempts") or enriched.get("max_poll_attempts")
+            enriched["total_evidence_search_time_seconds"] = metrics.get("total_evidence_search_time_seconds") or enriched.get("total_evidence_search_time_seconds")
+            enriched["retry_interval_seconds"] = metrics.get("poll_interval_seconds") or enriched.get("retry_interval_seconds")
+            enriched["tenant_evidence_status"] = _first_value(enriched.get("tenant_evidence_status"), "Found" if metrics.get("oauth_grant_created") else "Not found")
+            enriched["current_evidence_source"] = _first_value(enriched.get("current_evidence_source"), report.get("tenant_evidence_source"), "Microsoft Graph oauth2PermissionGrant query")
         elif scenario_id in CLD_SHAREPOINT_IDS:
             metrics = report.get("metrics") or {}
             attempt = report.get("anonymous_link_attempt") or {}
@@ -642,12 +704,26 @@ def _run_metric_tiles(run: dict, scenario_id: str, status: str) -> str:
         tiles.append(_metric_tile("MFA completed", run.get("mfa_completed")))
         tiles.append(_metric_tile("Sign-in result", run.get("sign_in_result")))
         tiles.append(_metric_tile("Effective policy", run.get("effective_policy")))
+    elif scenario_id in {"ID-DV-003", "ID-C-003"}:
+        tiles.append(_metric_tile("Mailbox ready", run.get("mailbox_ready")))
+        tiles.append(_metric_tile("Protocols tested", run.get("protocols_tested")))
+        tiles.append(_metric_tile("Protocol successes", run.get("protocol_success_count")))
+        tiles.append(_metric_tile("Blocked/denied", run.get("protocol_blocked_or_denied_count")))
+        tiles.append(_metric_tile("Legacy sign-ins", run.get("legacy_signin_evidence_count")))
+        tiles.append(_metric_tile("Legacy block policy", run.get("legacy_block_policy_names") or run.get("legacy_block_policy_applied")))
+    elif scenario_id in {"ID-DV-002", "ID-C-002"}:
+        tiles.append(_metric_tile("Token outcome", run.get("token_outcome")))
+        tiles.append(_metric_tile("Token issued", run.get("token_issued")))
+        tiles.append(_metric_tile("Device-code evidence", run.get("device_code_evidence_count")))
+        tiles.append(_metric_tile("Blocked evidence", run.get("blocked_evidence_count")))
+        tiles.append(_metric_tile("Block policy", run.get("block_policy_names")))
     elif scenario_id in {"ID-DV-005", "ID-C-005"}:
-        tiles.append(_metric_tile("External email", run.get("external_test_email")))
-        tiles.append(_metric_tile("Graph status", run.get("graph_connection_status")))
-        tiles.append(_metric_tile("Invitation attempted", "Yes" if run.get("guest_invitation_attempted") else "No"))
-        tiles.append(_metric_tile("Invitation succeeded", "Yes" if run.get("guest_invitation_succeeded") else "No"))
-        tiles.append(_metric_tile("Tenant blocked invite", "Yes" if run.get("tenant_blocked_invite") else "No"))
+        pass
+    elif scenario_id in {"ID-DV-004", "ID-C-004"}:
+        tiles.append(_metric_tile("OAuth grant", run.get("oauth_grant_created")))
+        tiles.append(_metric_tile("Grant count", run.get("grant_count")))
+        tiles.append(_metric_tile("Test app", run.get("target_app")))
+        tiles.append(_metric_tile("Requested scope", run.get("requested_scope")))
     elif scenario_id == "APP-DV-003":
         tiles.append(_metric_tile("Stopped early", "Yes" if run.get("polling_stopped_early") else "No"))
         tiles.append(_metric_tile("Detection method", run.get("detection_method")))
@@ -821,84 +897,102 @@ def _render_run(project_root: Path, run: dict, render_key: str) -> None:
 def render_active_runs_page(project_root: Path | str, hero=None) -> None:
     _css()
     project_root = Path(project_root)
+    st.session_state["ztvp_rendering_page"] = "Active Runs"
+    st.session_state.pop("ztvp_dynamic_open_scenario", None)
+    st.session_state.pop("ztvp_dynamic_open_run_id", None)
+    st.session_state.pop("ztvp_dynamic_open_run_status", None)
+    st.session_state.pop("ztvp_dynamic_open_report_path", None)
+    st.session_state.pop("ztvp_dynamic_pending_scenario_id", None)
+
     if hero:
         hero("Active Runs", "Monitor background validation runs, cancel polling, resume stale runs, and open completed reports.")
     else:
         st.title("Active Runs")
 
-    runs = list_runs(project_root)
-    for run in runs:
-        status = str(run.get("status") or "").lower()
-        run_id = str(run.get("run_id") or "")
-        if status in ACTIVE_STATUSES and _is_run_stale(run):
-            update_run(
-                project_root,
-                run_id,
-                status="stale",
-                verdict=run.get("verdict"),
-                phase="Interrupted",
-                current_message="Run was interrupted because the app process stopped.",
-            )
-    runs = list_runs(project_root)
-    if not runs:
-        _empty_state("No active run files exist yet. Start tenant evidence analysis from a scenario page.")
-        return
+    active_runs_slot = st.empty()
+    with active_runs_slot.container():
+        runs = list_runs(project_root)
+        for run in runs:
+            status = str(run.get("status") or "").lower()
+            run_id = str(run.get("run_id") or "")
+            if status in ACTIVE_STATUSES and _is_run_stale(run):
+                update_run(
+                    project_root,
+                    run_id,
+                    status="stale",
+                    verdict=run.get("verdict"),
+                    phase="Interrupted",
+                    current_message="Run was interrupted because the app process stopped.",
+                )
 
-    has_live_runs = any(str(run.get("status") or "").lower() in ACTIVE_STATUSES and not _is_run_stale(run) for run in runs)
+        runs = list_runs(project_root)
+        enriched_runs = [_enrich_run(project_root, run) for run in runs]
+        active = [run for run in enriched_runs if str(run.get("status") or "").lower() in ACTIVE_STATUSES and not _is_run_stale(run)]
+        completed = [run for run in enriched_runs if str(run.get("status") or "").lower() == "completed" and str(run.get("verdict") or "") in {"PASS", "PARTIAL", "FAIL"}]
+        failed = [run for run in enriched_runs if str(run.get("status") or "").lower() in FAILED_STATUSES or _is_run_stale(run)]
+        has_live_runs = bool(active)
 
-    with st.container():
         st.markdown('<div class="ztvp-run-toolbar-marker"></div>', unsafe_allow_html=True)
         filter_col, note_col, refresh_col, clear_col = st.columns([0.24, 0.34, 0.18, 0.24])
         with filter_col:
-            completed_limit = st.selectbox("Show recent completed runs", [10, 20, 50], index=0, format_func=lambda value: f"Last {value}", key="active_runs_completed_limit")
+            completed_limit = st.selectbox(
+                "Show recent completed runs",
+                [10, 20, 50],
+                index=0,
+                format_func=lambda value: f"Last {value}",
+                key="active_runs_completed_limit",
+            )
         with note_col:
             helper = "Live runs update when you refresh this page." if has_live_runs else "Completed cleanup removes Active Runs JSON entries only. Report files are kept."
             st.markdown(f'<div class="ztvp-run-toolbar-help">{_safe(helper)}</div>', unsafe_allow_html=True)
         with refresh_col:
-            if st.button("Refresh runs", use_container_width=True):
+            if st.button("Refresh runs", use_container_width=True, key="active_runs_refresh"):
                 st.rerun()
         with clear_col:
-            if st.button("Clear completed run states", use_container_width=True):
+            if st.button("Clear completed run states", use_container_width=True, key="active_runs_clear_completed", disabled=not bool(completed)):
                 for run in runs:
                     if str(run.get("status") or "").lower() == "completed":
                         remove_run(project_root, str(run.get("run_id") or ""))
                 st.rerun()
+        completed = completed[: int(completed_limit)]
 
-    enriched_runs = [_enrich_run(project_root, run) for run in runs]
-
-    rows = [
-        {
-            "Scenario": run.get("scenario_id"),
-            "Status": "Stale / interrupted" if _is_run_stale(run) else _display_status(run),
-            "Verdict": run.get("verdict") or "",
-            "Target": _first_value(run.get("target")),
-            "Tenant evidence": _first_value(run.get("tenant_evidence_status")),
-            "Updated UTC": run.get("last_updated_utc"),
-        }
-        for run in enriched_runs[:20]
-    ]
-    with st.container():
+        completed_rows = [
+            {
+                "Scenario": _first_value(run.get("scenario_id"), run.get("scenario_name")),
+                "Status": _display_status(run),
+                "Verdict": run.get("verdict") or "",
+                "Risk": run.get("risk") or "",
+                "Tenant evidence": _first_value(run.get("tenant_evidence_status")),
+                "Completed UTC": _first_value(run.get("completed_utc"), run.get("last_updated_utc")),
+            }
+            for run in completed
+        ]
         st.markdown('<div class="ztvp-run-table-marker"></div>', unsafe_allow_html=True)
-        st.markdown('<div class="ztvp-recent-runs-heading">Recent runs</div>', unsafe_allow_html=True)
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-    active = [run for run in enriched_runs if str(run.get("status") or "").lower() in ACTIVE_STATUSES and not _is_run_stale(run)]
-    completed = [run for run in enriched_runs if str(run.get("status") or "").lower() == "completed" and str(run.get("verdict") or "") in {"PASS", "PARTIAL", "FAIL"}][: int(completed_limit)]
-    failed = [run for run in enriched_runs if str(run.get("status") or "").lower() in FAILED_STATUSES or _is_run_stale(run)]
-
-    tab_active, tab_completed, tab_failed = st.tabs(["Active / Running Now", "Completed", "Failed / Cancelled / Stale"])
-    with tab_active:
-        if not active:
-            _empty_state("No running or polling scenarios.")
-        for index, run in enumerate(active):
-            _render_run(project_root, run, f"active_{index}")
-    with tab_completed:
-        if not completed:
+        st.markdown('<div class="ztvp-recent-runs-heading">Recent completed runs</div>', unsafe_allow_html=True)
+        if completed_rows:
+            st.dataframe(completed_rows, use_container_width=True, hide_index=True)
+        else:
             _empty_state("No completed scenarios yet.")
-        for index, run in enumerate(completed):
-            _render_run(project_root, run, f"completed_{index}")
-    with tab_failed:
-        if not failed:
-            _empty_state("No failed, cancelled, or stale scenarios.")
-        for index, run in enumerate(failed):
-            _render_run(project_root, run, f"failed_{index}")
+
+        tab_active, tab_completed, tab_failed = st.tabs(["Active / Running Now", "Completed", "Failed / Cancelled / Stale"])
+        with tab_active:
+            if not active:
+                _empty_state("No running or polling scenarios.")
+            for index, run in enumerate(active):
+                _render_run(project_root, run, f"active_{index}")
+        with tab_completed:
+            if not completed:
+                _empty_state("No completed scenarios yet.")
+            for index, run in enumerate(completed):
+                _render_run(project_root, run, f"completed_{index}")
+        with tab_failed:
+            if not failed:
+                _empty_state("No failed, cancelled, or stale scenarios.")
+            for index, run in enumerate(failed):
+                _render_run(project_root, run, f"failed_{index}")
+
+        if has_live_runs:
+            time.sleep(4)
+            st.rerun()
+
+    st.stop()

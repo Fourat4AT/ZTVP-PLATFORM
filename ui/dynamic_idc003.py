@@ -9,6 +9,8 @@ from typing import Any
 
 import pandas as pd
 import streamlit as st
+from background_jobs import start_scenario_job
+from run_state import ACTIVE_STATUSES, request_cancel, selected_run_for_scenario
 
 
 STATUS_LABELS = {
@@ -477,6 +479,42 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
         st.code(stdout or "No PowerShell output captured.", language="text")
 
 
+def _render_background_run_summary(project_root: Path, run: dict) -> None:
+    status = str(run.get("status") or "").lower()
+    if status in ACTIVE_STATUSES:
+        st.info("ID-DV-003 legacy authentication validation is running in Active Runs.")
+    else:
+        st.info("ID-DV-003 run state restored.")
+
+    cols = st.columns(4)
+    cols[0].metric("Phase", run.get("phase") or "Unknown")
+    cols[1].metric("Progress", f"{int(run.get('progress_percent') or 0)}%")
+    cols[2].metric("Polls", f"{run.get('poll_attempts') or 0} / {run.get('max_poll_attempts') or 'N/A'}")
+    cols[3].metric("Tenant evidence", run.get("tenant_evidence_status") or "Waiting")
+    if run.get("current_message"):
+        st.write(run.get("current_message"))
+
+    col_active, col_cancel = st.columns(2)
+    run_key = str(run.get("run_id") or "latest")
+    if col_active.button("Open Active Runs", use_container_width=True, key=f"idc003_open_active_runs_{run_key}"):
+        st.session_state["pending_navigation"] = {"main_navigation": "Active Runs", "pending_main_navigation": "Active Runs"}
+        st.session_state.pop("ztvp_dynamic_open_run_id", None)
+        st.rerun()
+    if status in ACTIVE_STATUSES and col_cancel.button("Cancel", use_container_width=True, key=f"idc003_cancel_active_run_{run_key}"):
+        request_cancel(project_root, str(run.get("run_id") or ""))
+        st.rerun()
+
+    if status in ACTIVE_STATUSES:
+        return
+
+    report_path = Path(str(run.get("report_json_path") or run.get("report_path") or ""))
+    html_path = Path(str(run.get("report_html_path") or run.get("html_report_path") or ""))
+    if report_path.exists():
+        report = _load_json(report_path)
+        if report:
+            _render_report(report, report_path, html_path, "")
+
+
 def render_idc003_runner(project_root: Path) -> None:
     project_root = Path(project_root)
     _css()
@@ -498,6 +536,18 @@ def render_idc003_runner(project_root: Path) -> None:
     prepare_script = project_root / "powershell" / "Engines" / "DynamicValidation" / "Prepare-ZTVP-IDC003Decoy.ps1"
     invoke_script = project_root / "powershell" / "Engines" / "DynamicValidation" / "Invoke-ZTVP-IDC003.ps1"
     cleanup_script = project_root / "powershell" / "Engines" / "DynamicValidation" / "Cleanup-ZTVP-IDC003Decoy.ps1"
+
+    requested_run_id = st.session_state.get("ztvp_dynamic_open_run_id")
+    active_or_selected_run = selected_run_for_scenario(project_root, "ID-DV-003", requested_run_id)
+    if active_or_selected_run and str(active_or_selected_run.get("status") or "").lower() in ACTIVE_STATUSES:
+        _render_background_run_summary(project_root, active_or_selected_run)
+        return
+    if active_or_selected_run and (requested_run_id or str(active_or_selected_run.get("status") or "").lower() == "completed"):
+        _render_background_run_summary(project_root, active_or_selected_run)
+        st.session_state.pop("ztvp_dynamic_open_run_id", None)
+        st.session_state.pop("ztvp_dynamic_open_run_status", None)
+        st.session_state.pop("ztvp_dynamic_open_report_path", None)
+        st.markdown("---")
 
     state = _load_json(state_path)
     decoy = state.get("decoy_user", {}) or {}
@@ -634,26 +684,17 @@ Password: {_safe(st.session_state.get("idc003_temp_password"))}
                     "-MailboxWaitMinutes", str(int(wait_minutes)),
                     "-LookbackMinutes", str(int(lookback_minutes)),
                 ]
-
-                with st.spinner("Testing SMTP/IMAP/POP authentication and collecting Entra evidence..."):
-                    completed = _run_powershell(project_root, invoke_script, args, timeout=1800)
-
-                report_path = project_root / "powershell" / "Reports" / "Dynamic" / "ID-C-003-result.json"
-                html_path = project_root / "powershell" / "Reports" / "Dynamic" / "Html" / "ID-C-003-result.html"
-
-                if completed.returncode != 0:
-                    _alert("ID-DV-003 failed.", "bad")
-                    st.code(completed.stderr or completed.stdout, language="text")
-                    return
-
-                if not report_path.exists():
-                    _alert("Validation completed, but the JSON report was not found.", "warn")
-                    st.code(completed.stdout, language="text")
-                    return
-
-                report = _load_json(report_path)
-                _write_html_report(report, html_path)
-                _render_report(report, report_path, html_path, completed.stdout)
+                run = start_scenario_job(
+                    project_root,
+                    "ID-DV-003",
+                    wait_minutes=max(1, int(wait_minutes) or 1),
+                    poll_seconds=30,
+                    extra_args=args,
+                    target=decoy.get("user_principal_name") or "ID-DV-003 decoy mailbox",
+                )
+                st.session_state["ztvp_dynamic_open_run_id"] = run.get("run_id")
+                _alert("ID-DV-003 legacy authentication validation started as a background Active Run.", "good")
+                st.rerun()
 
     _step(3, "Clean up temporary user")
 

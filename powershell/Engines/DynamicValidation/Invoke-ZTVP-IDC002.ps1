@@ -1,6 +1,7 @@
 param(
     [int]$PollMinutes = 8,
-    [int]$LookbackMinutes = 240
+    [int]$LookbackMinutes = 240,
+    [string]$EvidenceStartUtc = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -133,7 +134,11 @@ function Poll-ZTVPDeviceCodeToken {
         [string]$ClientId,
         [string]$DeviceCode,
         [int]$InitialIntervalSeconds,
-        [int]$PollMinutes
+        [int]$PollMinutes,
+        [string]$TargetUpn = "",
+        [string]$TargetUserId = "",
+        [datetime]$EvidenceStartUtcDate = ([DateTime]::UtcNow),
+        [string]$EvidenceClientId = ""
     )
 
     $tokenUri = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
@@ -145,6 +150,9 @@ function Poll-ZTVPDeviceCodeToken {
     $tokenOutcome = "TimeoutPending"
     $lastError = $null
     $pollCount = 0
+    $earlyTenantEvidenceFound = $false
+    $earlyTenantEvidenceCount = 0
+    $lastEvidencePollUtc = $null
 
     while ((Get-Date) -lt $deadline) {
         $pollCount++
@@ -194,6 +202,33 @@ function Poll-ZTVPDeviceCodeToken {
             }
 
             if ($errorCode -eq "authorization_pending") {
+                $shouldCheckTenantEvidence = -not [string]::IsNullOrWhiteSpace($TargetUpn)
+                if ($shouldCheckTenantEvidence -and $lastEvidencePollUtc) {
+                    $secondsSinceLastEvidencePoll = ((Get-Date).ToUniversalTime() - $lastEvidencePollUtc).TotalSeconds
+                    $shouldCheckTenantEvidence = ($secondsSinceLastEvidencePoll -ge [Math]::Max(15, $interval))
+                }
+
+                if ($shouldCheckTenantEvidence) {
+                    $lastEvidencePollUtc = (Get-Date).ToUniversalTime()
+                    try {
+                        Write-Host "Checking Entra sign-in evidence during token polling..."
+                        $earlyRawSignIns = @(Get-ZTVPSignInsForUser -TargetUpn $TargetUpn -TargetUserId $TargetUserId -StartUtcDate $EvidenceStartUtcDate)
+                        $earlyRows = @(Convert-ZTVPDeviceCodeEvidence -SignIns $earlyRawSignIns -StartUtcDate $EvidenceStartUtcDate -ClientId $EvidenceClientId)
+                        $earlyRelevantRows = @(Select-ZTVPDeviceCodeMatchingRows -EvidenceRows $earlyRows -TargetUpn $TargetUpn -TargetUserId $TargetUserId)
+
+                        if ($earlyRelevantRows.Count -gt 0) {
+                            $earlyTenantEvidenceFound = $true
+                            $earlyTenantEvidenceCount = $earlyRelevantRows.Count
+                            $tokenOutcome = "TenantEvidenceFound"
+                            Write-Host "Tenant sign-in evidence found during token polling. Stopping early."
+                            break
+                        }
+                    }
+                    catch {
+                        Write-Host "Tenant evidence check during token polling did not complete: $($_.Exception.Message)"
+                    }
+                }
+
                 Start-Sleep -Seconds $interval
                 continue
             }
@@ -224,6 +259,8 @@ function Poll-ZTVPDeviceCodeToken {
         token_outcome = $tokenOutcome
         last_error = $lastError
         poll_count = $pollCount
+        early_tenant_evidence_found = $earlyTenantEvidenceFound
+        early_tenant_evidence_count = $earlyTenantEvidenceCount
         poll_events = @($events)
     }
 }
@@ -308,6 +345,68 @@ function Get-ZTVPDeviceCodeBlockPolicies {
     return $policies
 }
 
+function Get-ZTVPDeviceCodeDecoyPrefixes {
+    param([string]$TargetUpn)
+
+    $prefixes = @()
+    $targetLower = ([string]$TargetUpn).Trim().ToLower()
+
+    if (-not [string]::IsNullOrWhiteSpace($targetLower)) {
+        $prefixes += $targetLower
+        $localPart = ($targetLower -split "@", 2)[0]
+        if (-not [string]::IsNullOrWhiteSpace($localPart)) {
+            $prefixes += $localPart
+            if ($localPart -match "^(ztvp-idc002-devicecode)") {
+                $prefixes += $Matches[1]
+            }
+        }
+    }
+
+    return @($prefixes | Where-Object {
+        -not [string]::IsNullOrWhiteSpace([string]$_)
+    } | Sort-Object -Unique)
+}
+
+function Test-ZTVPDeviceCodeUserMatch {
+    param(
+        [string]$LogUpn,
+        [string]$LogUserId,
+        [string]$TargetUpn,
+        [string]$TargetUserId
+    )
+
+    $logUpnLower = ([string]$LogUpn).Trim().ToLower()
+    $targetLower = ([string]$TargetUpn).Trim().ToLower()
+
+    if (-not [string]::IsNullOrWhiteSpace($targetLower) -and $logUpnLower -eq $targetLower) {
+        return $true
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($TargetUserId) -and [string]$LogUserId -eq [string]$TargetUserId) {
+        return $true
+    }
+
+    foreach ($prefix in @(Get-ZTVPDeviceCodeDecoyPrefixes -TargetUpn $TargetUpn)) {
+        if ($logUpnLower.StartsWith([string]$prefix)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Test-ZTVPDeviceCodeGraphAppMatch {
+    param([object]$SignIn)
+
+    $app = [string](Get-ZTVPValue -Object $SignIn -Name "appDisplayName")
+    $resource = [string](Get-ZTVPValue -Object $SignIn -Name "resourceDisplayName")
+
+    return (
+        $app -match "Microsoft Graph Command Line Tools" -or
+        $resource -match "Microsoft Graph"
+    )
+}
+
 function Get-ZTVPSignInsForUser {
     param(
         [string]$TargetUpn,
@@ -316,24 +415,46 @@ function Get-ZTVPSignInsForUser {
     )
 
     $all = @()
-    $startUtc = $StartUtcDate.ToString("o")
+    $queryStartUtcDate = $StartUtcDate.AddMinutes(-2)
+    $startUtc = $queryStartUtcDate.ToString("o")
     $targetLower = $TargetUpn.Trim().ToLower()
     $safeOriginal = $TargetUpn.Replace("'", "''")
     $safeLower = $targetLower.Replace("'", "''")
+    $prefixes = @(Get-ZTVPDeviceCodeDecoyPrefixes -TargetUpn $TargetUpn)
+    $prefixForGraphFilter = @($prefixes | Where-Object { [string]$_ -eq "ztvp-idc002-devicecode" } | Select-Object -First 1)
+    if (-not $prefixForGraphFilter) {
+        $prefixForGraphFilter = @($prefixes | Where-Object { [string]$_ -notmatch "@" } | Select-Object -First 1)
+    }
+    if (-not $prefixForGraphFilter) {
+        $prefixForGraphFilter = @($prefixes | Select-Object -First 1)
+    }
+    $safePrefix = ([string]$prefixForGraphFilter).Replace("'", "''")
 
     $queries = @()
+    $eventTypeFilters = @(
+        "",
+        " and signInEventTypes/any(t: t eq 'interactiveUser')",
+        " and signInEventTypes/any(t: t eq 'nonInteractiveUser')"
+    )
 
-    $filter1 = "createdDateTime ge $startUtc and userPrincipalName eq '$safeOriginal'"
-    $queries += "https://graph.microsoft.com/v1.0/auditLogs/signIns?`$top=1000&`$filter=$([System.Uri]::EscapeDataString($filter1))"
+    foreach ($eventTypeFilter in $eventTypeFilters) {
+        $filter1 = "createdDateTime ge $startUtc and userPrincipalName eq '$safeOriginal'$eventTypeFilter"
+        $queries += "https://graph.microsoft.com/v1.0/auditLogs/signIns?`$top=1000&`$filter=$([System.Uri]::EscapeDataString($filter1))"
 
-    if ($safeLower -ne $safeOriginal) {
-        $filter2 = "createdDateTime ge $startUtc and userPrincipalName eq '$safeLower'"
-        $queries += "https://graph.microsoft.com/v1.0/auditLogs/signIns?`$top=1000&`$filter=$([System.Uri]::EscapeDataString($filter2))"
-    }
+        if ($safeLower -ne $safeOriginal) {
+            $filter2 = "createdDateTime ge $startUtc and userPrincipalName eq '$safeLower'$eventTypeFilter"
+            $queries += "https://graph.microsoft.com/v1.0/auditLogs/signIns?`$top=1000&`$filter=$([System.Uri]::EscapeDataString($filter2))"
+        }
 
-    if (-not [string]::IsNullOrWhiteSpace($TargetUserId)) {
-        $filter3 = "createdDateTime ge $startUtc and userId eq '$TargetUserId'"
-        $queries += "https://graph.microsoft.com/v1.0/auditLogs/signIns?`$top=1000&`$filter=$([System.Uri]::EscapeDataString($filter3))"
+        if (-not [string]::IsNullOrWhiteSpace($TargetUserId)) {
+            $filter3 = "createdDateTime ge $startUtc and userId eq '$TargetUserId'$eventTypeFilter"
+            $queries += "https://graph.microsoft.com/v1.0/auditLogs/signIns?`$top=1000&`$filter=$([System.Uri]::EscapeDataString($filter3))"
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($safePrefix)) {
+            $filter4 = "createdDateTime ge $startUtc and startswith(userPrincipalName,'$safePrefix')$eventTypeFilter"
+            $queries += "https://graph.microsoft.com/v1.0/auditLogs/signIns?`$top=1000&`$filter=$([System.Uri]::EscapeDataString($filter4))"
+        }
     }
 
     foreach ($uri in $queries) {
@@ -344,20 +465,20 @@ function Get-ZTVPSignInsForUser {
     }
 
     try {
-        $recent = @(Invoke-ZTVPPagedGraphQuery -Uri "https://graph.microsoft.com/v1.0/auditLogs/signIns?`$top=1000" -MaxPages 20)
+        $recent = @()
+        foreach ($eventTypeFilter in $eventTypeFilters) {
+            $recentFilter = "createdDateTime ge $startUtc$eventTypeFilter"
+            $recentUri = "https://graph.microsoft.com/v1.0/auditLogs/signIns?`$top=1000&`$filter=$([System.Uri]::EscapeDataString($recentFilter))"
+            $recent += @(Invoke-ZTVPPagedGraphQuery -Uri $recentUri -MaxPages 20)
+        }
 
         $all += @(
             $recent | Where-Object {
-                $logUpn = ([string](Get-ZTVPValue -Object $_ -Name "userPrincipalName")).Trim().ToLower()
+                $logUpn = [string](Get-ZTVPValue -Object $_ -Name "userPrincipalName")
                 $logUserId = [string](Get-ZTVPValue -Object $_ -Name "userId")
 
-                (
-                    $logUpn -eq $targetLower -or
-                    (
-                        -not [string]::IsNullOrWhiteSpace($TargetUserId) -and
-                        $logUserId -eq $TargetUserId
-                    )
-                )
+                (Test-ZTVPDeviceCodeUserMatch -LogUpn $logUpn -LogUserId $logUserId -TargetUpn $TargetUpn -TargetUserId $TargetUserId) -and
+                (Test-ZTVPDeviceCodeGraphAppMatch -SignIn $_)
             }
         )
     }
@@ -394,10 +515,11 @@ function Convert-ZTVPDeviceCodeEvidence {
     foreach ($signIn in $SignIns) {
         $createdRaw = [string](Get-ZTVPValue -Object $signIn -Name "createdDateTime")
         $withinLookback = $false
+        $matchStartUtcDate = $StartUtcDate.AddMinutes(-2)
 
         try {
             $createdUtc = ([DateTimeOffset]::Parse($createdRaw)).UtcDateTime
-            if ($createdUtc -ge $StartUtcDate) { $withinLookback = $true }
+            if ($createdUtc -ge $matchStartUtcDate) { $withinLookback = $true }
         }
         catch {}
 
@@ -424,6 +546,8 @@ function Convert-ZTVPDeviceCodeEvidence {
 
         $appDisplayName = [string](Get-ZTVPValue -Object $signIn -Name "appDisplayName")
         $resourceDisplayName = [string](Get-ZTVPValue -Object $signIn -Name "resourceDisplayName")
+        $requestId = [string](Get-ZTVPValue -Object $signIn -Name "requestId")
+        $signInId = [string](Get-ZTVPValue -Object $signIn -Name "id")
         $authProtocol = [string](Get-ZTVPValue -Object $signIn -Name "authenticationProtocol")
         $clientAppUsed = [string](Get-ZTVPValue -Object $signIn -Name "clientAppUsed")
         $caStatus = [string](Get-ZTVPValue -Object $signIn -Name "conditionalAccessStatus")
@@ -465,8 +589,10 @@ function Convert-ZTVPDeviceCodeEvidence {
             $isReportOnly = $resultLower -match "reportonly"
             $isNotApplied = $resultLower -eq "notapplied"
             $isApplied = (-not $isReportOnly -and -not $isNotApplied -and -not [string]::IsNullOrWhiteSpace($resultLower))
+            $isFailureBlock = ($resultLower -eq "failure" -and $hasBlock)
+            $isBlockingPolicyForThisAttempt = ($isApplied -and ($isFailureBlock -or ($hasBlock -and $resultLower -match "block")))
 
-            if ($hasBlock -and $looksDeviceCode -and $isApplied) {
+            if ($isBlockingPolicyForThisAttempt) {
                 $blockPolicyApplied = $true
                 if (-not [string]::IsNullOrWhiteSpace($policyName)) { $blockPolicyNames += $policyName }
             }
@@ -479,9 +605,11 @@ function Convert-ZTVPDeviceCodeEvidence {
                 displayName = $policyName
                 result = $policyResult
                 enforcedGrantControls = @($grantControls)
+                grantControlsText = ($grantControls -join ", ")
                 deviceCodeDetected = $looksDeviceCode
                 blockGrantDetected = $hasBlock
-                blockPolicyApplied = ($hasBlock -and $looksDeviceCode -and $isApplied)
+                failureBlockPolicy = $isFailureBlock
+                blockPolicyApplied = $isBlockingPolicyForThisAttempt
                 reportOnlyBlockPolicyMatched = ($hasBlock -and $looksDeviceCode -and $isReportOnly)
             }
         }
@@ -523,6 +651,9 @@ function Convert-ZTVPDeviceCodeEvidence {
             EvidenceType = $evidenceType
             IsInteractive = $isInteractive
             UserPrincipalName = Get-ZTVPValue -Object $signIn -Name "userPrincipalName"
+            UserId = Get-ZTVPValue -Object $signIn -Name "userId"
+            SignInId = $signInId
+            RequestId = $requestId
             AppDisplayName = $appDisplayName
             ResourceDisplayName = $resourceDisplayName
             AuthenticationProtocol = $authProtocol
@@ -535,6 +666,7 @@ function Convert-ZTVPDeviceCodeEvidence {
             AppliedConditionalAccess = $policySummary
             ConditionalAccessPolicies = @($policyObjects)
             StatusCode = $statusCode
+            Status = if ($success) { "Success" } else { "Failure" }
             FailureReason = $failureReason
             AdditionalDetails = $additionalDetails
             Success = $success
@@ -546,6 +678,52 @@ function Convert-ZTVPDeviceCodeEvidence {
     }
 
     return $rows
+}
+
+function Select-ZTVPDeviceCodeMatchingRows {
+    param(
+        [object[]]$EvidenceRows,
+        [string]$TargetUpn,
+        [string]$TargetUserId
+    )
+
+    $allMatches = @(
+        $EvidenceRows | Where-Object {
+            $logUpn = [string]$_.UserPrincipalName
+            $logUserId = [string]$_.UserId
+            $app = [string]$_.AppDisplayName
+            $resource = [string]$_.ResourceDisplayName
+            $_.WithinLookback -eq $true -and (
+                Test-ZTVPDeviceCodeUserMatch -LogUpn $logUpn -LogUserId $logUserId -TargetUpn $TargetUpn -TargetUserId $TargetUserId
+            ) -and (
+                $app -match "Microsoft Graph Command Line Tools" -or
+                $resource -match "Microsoft Graph"
+            )
+        }
+    )
+
+    $interactiveMatches = @($allMatches | Where-Object { $_.IsInteractive -eq $true })
+    $selectedMatches = if ($interactiveMatches.Count -gt 0) { $interactiveMatches } else { $allMatches }
+
+    return @(
+        $selectedMatches | Sort-Object -Property @{ Expression = {
+            try { [DateTimeOffset]::Parse([string]$_.CreatedDateTime).UtcDateTime } catch { [DateTime]::MinValue }
+        }; Descending = $true }
+    )
+}
+
+function Get-ZTVPFailureBlockPolicyRows {
+    param([object]$EvidenceRow)
+
+    if ($null -eq $EvidenceRow) { return @() }
+
+    return @(
+        @(ConvertTo-ZTVPArray $EvidenceRow.ConditionalAccessPolicies) | Where-Object {
+            $result = ([string]$_.result).Trim().ToLower()
+            $grantText = "$($_.grantControlsText) $($_.enforcedGrantControls -join ',')"
+            $result -eq "failure" -and $grantText -match "block"
+        }
+    )
 }
 
 $ctx = Ensure-ZTVPGraphConnection -Scopes $RequiredScopes
@@ -573,6 +751,17 @@ $clientId = [string]$challenge.client_id
 $deviceCode = [string]$challenge.device_code
 $startTime = ([DateTimeOffset]::Parse([string]$challenge.started_at)).UtcDateTime
 $startUtcDate = (Get-Date).ToUniversalTime().AddMinutes(-1 * $LookbackMinutes)
+$effectiveStartUtcDate = $startUtcDate
+
+if (-not [string]::IsNullOrWhiteSpace($EvidenceStartUtc)) {
+    try {
+        $effectiveStartUtcDate = ([DateTimeOffset]::Parse($EvidenceStartUtc)).UtcDateTime
+    }
+    catch {
+        Write-Host "EvidenceStartUtc could not be parsed. Falling back to LookbackMinutes."
+        $effectiveStartUtcDate = $startUtcDate
+    }
+}
 
 Write-Host ""
 Write-Host "========================================="
@@ -581,6 +770,7 @@ Write-Host "========================================="
 Write-Host ""
 Write-Host "Target user: $targetUpn"
 Write-Host "Client ID: $clientId"
+Write-Host "Evidence search starts at UTC: $($effectiveStartUtcDate.ToString('o'))"
 Write-Host "Polling token endpoint for result..."
 
 $tokenResult = Poll-ZTVPDeviceCodeToken `
@@ -588,7 +778,11 @@ $tokenResult = Poll-ZTVPDeviceCodeToken `
     -ClientId $clientId `
     -DeviceCode $deviceCode `
     -InitialIntervalSeconds ([int]$challenge.interval_seconds) `
-    -PollMinutes $PollMinutes
+    -PollMinutes $PollMinutes `
+    -TargetUpn $targetUpn `
+    -TargetUserId $targetUserId `
+    -EvidenceStartUtcDate $effectiveStartUtcDate `
+    -EvidenceClientId $clientId
 
 Write-Host "Token outcome: $($tokenResult.token_outcome)"
 Write-Host "Token issued: $($tokenResult.token_issued)"
@@ -604,38 +798,87 @@ Write-Host "Report-only device-code block policies: $($reportOnlyBlockPolicies.C
 
 Write-Host "Collecting Microsoft Entra sign-in evidence..."
 
-$rawSignIns = @(Get-ZTVPSignInsForUser -TargetUpn $targetUpn -TargetUserId $targetUserId -StartUtcDate $startUtcDate)
-$evidenceAll = @(Convert-ZTVPDeviceCodeEvidence -SignIns $rawSignIns -StartUtcDate $startUtcDate -ClientId $clientId)
-
-$evidenceRows = @(
-    $evidenceAll | Where-Object {
-        $_.WithinLookback -eq $true
-    }
-)
-
-$deviceCodeRows = @(
-    $evidenceRows | Where-Object {
-        $_.DeviceCodeEvidence -eq $true -or $_.AppDisplayName -match "Graph|PowerShell|Command Line|ZTVP"
-    }
-)
-
-$blockedRows = @(
-    $evidenceRows | Where-Object {
-        $_.Blocked -eq $true -or $_.BlockPolicyApplied -eq $true
-    }
-)
-
+$evidencePollSeconds = 15
+$evidenceDeadline = (Get-Date).AddMinutes($PollMinutes)
+$evidencePollCount = 0
+$maxEvidencePollAttempts = [Math]::Max(1, [int][Math]::Ceiling(($PollMinutes * 60) / $evidencePollSeconds))
+$evidenceStoppedEarly = $false
+$rawSignIns = @()
+$evidenceAll = @()
+$evidenceRows = @()
+$deviceCodeRows = @()
+$blockedRows = @()
 $blockPolicyNames = @()
+$latestMatchingSignIn = $null
+$failureBlockPolicyRows = @()
 
-foreach ($row in $evidenceRows) {
-    if ($row.BlockPolicyNames) {
-        $blockPolicyNames += @($row.BlockPolicyNames)
+do {
+    $evidencePollCount++
+    Write-Host "Evidence poll $evidencePollCount/$maxEvidencePollAttempts - querying Entra sign-in logs from $($effectiveStartUtcDate.ToString('o'))..."
+
+    $rawSignIns = @(Get-ZTVPSignInsForUser -TargetUpn $targetUpn -TargetUserId $targetUserId -StartUtcDate $effectiveStartUtcDate)
+    $evidenceAll = @(Convert-ZTVPDeviceCodeEvidence -SignIns $rawSignIns -StartUtcDate $effectiveStartUtcDate -ClientId $clientId)
+
+    $evidenceRows = @(
+        $evidenceAll | Where-Object {
+            $_.WithinLookback -eq $true
+        }
+    )
+
+    $deviceCodeRows = @(Select-ZTVPDeviceCodeMatchingRows -EvidenceRows $evidenceRows -TargetUpn $targetUpn -TargetUserId $targetUserId)
+    $latestMatchingSignIn = if ($deviceCodeRows.Count -gt 0) { $deviceCodeRows[0] } else { $null }
+    $failureBlockPolicyRows = @(Get-ZTVPFailureBlockPolicyRows -EvidenceRow $latestMatchingSignIn)
+
+    Write-Host "Raw sign-ins retrieved: $($rawSignIns.Count)"
+    Write-Host "Matching Microsoft Graph device-code rows: $($deviceCodeRows.Count)"
+    if ($latestMatchingSignIn) {
+        Write-Host "Latest matching row: $($latestMatchingSignIn.CreatedDateTime) | $($latestMatchingSignIn.UserPrincipalName) | $($latestMatchingSignIn.AppDisplayName) | $($latestMatchingSignIn.ResourceDisplayName) | $($latestMatchingSignIn.Status) | CA=$($latestMatchingSignIn.ConditionalAccessStatus)"
+        Write-Host "Failure+Block policy rows: $($failureBlockPolicyRows.Count)"
+    }
+
+    $blockedRows = @(
+        $deviceCodeRows | Where-Object {
+            $_.Blocked -eq $true -or $_.BlockPolicyApplied -eq $true -or (
+                [string]$_.Status -eq "Failure" -and [string]$_.ConditionalAccessStatus -match "failure"
+            )
+        }
+    )
+
+    $blockPolicyNames = @()
+
+    foreach ($row in $deviceCodeRows) {
+        if ($row.BlockPolicyNames) {
+            $blockPolicyNames += @($row.BlockPolicyNames)
+        }
+    }
+
+    $blockPolicyNames = @($blockPolicyNames | Where-Object {
+        -not [string]::IsNullOrWhiteSpace([string]$_)
+    } | Sort-Object -Unique)
+
+    $latestFailureCa = ($latestMatchingSignIn -and [string]$latestMatchingSignIn.Status -eq "Failure" -and [string]$latestMatchingSignIn.ConditionalAccessStatus -match "failure")
+    $logTokenIssued = ($latestMatchingSignIn -and $latestMatchingSignIn.TokenLikelyIssuedFromLogs -eq $true)
+    $blockingPolicyFound = ($failureBlockPolicyRows.Count -gt 0)
+
+    if ($tokenResult.token_issued -eq $true -or $logTokenIssued -or ($latestFailureCa -and $blockingPolicyFound)) {
+        $evidenceStoppedEarly = $true
+        if ($tokenResult.token_issued -eq $true) {
+            Write-Host "Token endpoint returned a token. Stopping evidence polling early."
+        }
+        elseif ($logTokenIssued) {
+            Write-Host "Matching device-code sign-in shows token issuance in tenant logs. Stopping evidence polling early."
+        }
+        else {
+            Write-Host "Matching device-code sign-in with blocking Conditional Access policy found. Stopping evidence polling early."
+        }
+        break
+    }
+
+    if ((Get-Date).AddSeconds($evidencePollSeconds) -lt $evidenceDeadline) {
+        Start-Sleep -Seconds $evidencePollSeconds
     }
 }
-
-$blockPolicyNames = @($blockPolicyNames | Where-Object {
-    -not [string]::IsNullOrWhiteSpace([string]$_)
-} | Sort-Object -Unique)
+while ((Get-Date) -lt $evidenceDeadline -and $evidencePollCount -lt $maxEvidencePollAttempts)
 
 $warnings = @()
 $finalClaim = ""
@@ -648,54 +891,33 @@ if ($tokenResult.token_issued -eq $true) {
     $summary = "The device-code flow completed and a token was issued for the decoy user."
     $finalClaim = "The tenant allowed the controlled device-code authentication flow. Device-code phishing resistance is not proven."
 }
-elseif ($blockedRows.Count -gt 0 -and $blockPolicyNames.Count -gt 0) {
+elseif ($latestMatchingSignIn -and [string]$latestMatchingSignIn.Status -eq "Failure" -and [string]$latestMatchingSignIn.ConditionalAccessStatus -match "failure" -and $failureBlockPolicyRows.Count -gt 0) {
     $status = "PASS_DEVICE_CODE_BLOCKED_STRONG"
     $risk = "LOW"
     $evidenceQuality = "Strong"
     $summary = "The tenant blocked the controlled device-code authentication attempt and the blocking Conditional Access policy was identified."
     $finalClaim = "The tenant resisted the controlled device-code authentication attempt. No token was issued."
 }
-elseif ($blockedRows.Count -gt 0) {
-    $status = "PASS_DEVICE_CODE_BLOCKED"
-    $risk = "LOW"
-    $evidenceQuality = "Strong"
-    $summary = "The tenant blocked or denied the controlled device-code authentication attempt."
-    $finalClaim = "The tenant resisted the controlled device-code authentication attempt. No token was issued."
+elseif ($latestMatchingSignIn -and $latestMatchingSignIn.TokenLikelyIssuedFromLogs -eq $true) {
+    $status = "FAIL_DEVICE_CODE_ALLOWED"
+    $risk = "HIGH"
+    $evidenceQuality = "High Risk"
+    $summary = "The latest matching Microsoft Graph device-code sign-in succeeded."
+    $finalClaim = "The tenant allowed the controlled device-code authentication flow. Device-code phishing resistance is not proven."
 }
-elseif ($tokenResult.token_outcome -eq "BlockedOrDenied") {
-    $status = "PASS_BLOCKED_TOKEN_ENDPOINT"
-    $risk = "LOW"
-    $evidenceQuality = "Medium"
-    $summary = "The token endpoint reported the device-code flow was blocked or denied, but Conditional Access sign-in attribution was not clearly found yet."
-    $finalClaim = "The tenant did not issue a token for the controlled device-code attempt."
-}
-elseif ($deviceCodeRows.Count -gt 0 -and $tokenResult.token_issued -ne $true) {
+elseif ($latestMatchingSignIn) {
     $status = "PARTIAL_DEVICE_CODE_EVIDENCE"
     $risk = "MEDIUM"
     $evidenceQuality = "Partial"
-    $summary = "Device-code-related sign-in evidence was found, but a blocking policy was not clearly attributed."
-    $finalClaim = "The run produced device-code telemetry, but enforcement attribution is incomplete."
-}
-elseif ($enabledBlockPolicies.Count -gt 0) {
-    $status = "CONFIGURED_NOT_VALIDATED"
-    $risk = "MEDIUM"
-    $evidenceQuality = "Configuration Only"
-    $summary = "An enabled device-code block policy was found, but no matching sign-in evidence was found for this exact decoy run."
-    $finalClaim = "The tenant appears configured to block device-code flow, but this run did not prove enforcement."
-}
-elseif ($reportOnlyBlockPolicies.Count -gt 0) {
-    $status = "REPORT_ONLY_NOT_ENFORCED"
-    $risk = "MEDIUM"
-    $evidenceQuality = "Configuration Only"
-    $summary = "A report-only device-code block policy was found. Report-only policies do not prove enforcement."
-    $finalClaim = "The tenant has report-only device-code blocking configuration, but enforcement was not proven."
+    $summary = "A matching Microsoft Graph device-code sign-in was found, but no Conditional Access policy row with Result=Failure and Grant control=Block was attributed before timeout."
+    $finalClaim = "The run found matching tenant sign-in evidence, but enforcement attribution is incomplete."
 }
 else {
-    $status = "NO_EVIDENCE"
+    $status = "PARTIAL_NO_MATCHING_SIGNIN"
     $risk = "MEDIUM"
     $evidenceQuality = "None"
-    $summary = "No device-code sign-in evidence or enabled device-code block policy was found by this validation."
-    $finalClaim = "The validation could not prove whether device-code authentication is blocked."
+    $summary = "No matching Microsoft Graph device-code sign-in was found for the current decoy user before timeout."
+    $finalClaim = "The validation could not prove whether device-code authentication is blocked because no matching sign-in was found."
 }
 
 if ($reportOnlyBlockPolicies.Count -gt 0) {
@@ -706,9 +928,26 @@ if ($tokenResult.token_issued -eq $true) {
     $warnings += "A token was issued during this controlled test. ZTVP did not store the token. Cleanup should revoke sessions and delete the decoy user."
 }
 
+$mainBlockingPolicy = $null
+if ($failureBlockPolicyRows.Count -gt 0) {
+    $mainBlockingPolicy = $failureBlockPolicyRows[0]
+    $blockPolicyNames = @(
+        $failureBlockPolicyRows | ForEach-Object {
+            [string]$_.displayName
+        } | Where-Object {
+            -not [string]::IsNullOrWhiteSpace([string]$_)
+        } | Sort-Object -Unique
+    )
+}
+
 $policyAttribution = [PSCustomObject]@{
-    device_code_block_policy_applied = ($blockPolicyNames.Count -gt 0)
+    device_code_block_policy_applied = ($failureBlockPolicyRows.Count -gt 0)
+    matching_signin_found = ($null -ne $latestMatchingSignIn)
+    tenant_evidence_found = ($null -ne $latestMatchingSignIn)
+    main_blocking_policy_name = if ($mainBlockingPolicy) { [string]$mainBlockingPolicy.displayName } else { $null }
     block_policy_names = @($blockPolicyNames)
+    blocking_policy_rows = @($failureBlockPolicyRows)
+    matched_policy_rows = if ($latestMatchingSignIn) { @($latestMatchingSignIn.ConditionalAccessPolicies) } else { @() }
     configured_enabled_block_policy_count = $enabledBlockPolicies.Count
     configured_report_only_block_policy_count = $reportOnlyBlockPolicies.Count
     token_outcome = $tokenResult.token_outcome
@@ -765,20 +1004,36 @@ $result = [PSCustomObject]@{
     token_polling = $tokenResult
     policy_attribution = $policyAttribution
     configured_device_code_block_policies = @($configuredPolicies)
+    matched_sign_in = $latestMatchingSignIn
 
     metrics = [PSCustomObject]@{
         token_issued = $tokenResult.token_issued
+        tenant_evidence_found = ($null -ne $latestMatchingSignIn)
+        matching_signin_found = ($null -ne $latestMatchingSignIn)
+        latest_matching_signin_time_utc = if ($latestMatchingSignIn) { [string]$latestMatchingSignIn.CreatedDateTime } else { $null }
+        main_blocking_policy_name = if ($mainBlockingPolicy) { [string]$mainBlockingPolicy.displayName } else { $null }
         poll_count = $tokenResult.poll_count
+        poll_attempts = $evidencePollCount
+        max_poll_attempts = $maxEvidencePollAttempts
+        token_poll_attempts = $tokenResult.poll_count
+        evidence_poll_attempts = $evidencePollCount
+        evidence_max_poll_attempts = $maxEvidencePollAttempts
+        evidence_poll_interval_seconds = $evidencePollSeconds
+        polling_stopped_early = ($tokenResult.token_outcome -ne "TimeoutPending" -or $evidenceStoppedEarly)
+        early_tenant_evidence_found = $tokenResult.early_tenant_evidence_found
+        early_tenant_evidence_count = $tokenResult.early_tenant_evidence_count
+        evidence_stopped_early = $evidenceStoppedEarly
+        evidence_start_utc = $effectiveStartUtcDate.ToString("o")
         target_signins_total_retrieved = $evidenceAll.Count
-        target_signins_inside_lookback = $evidenceRows.Count
+        target_signins_inside_lookback = $deviceCodeRows.Count
         device_code_evidence_count = $deviceCodeRows.Count
         blocked_evidence_count = $blockedRows.Count
-        block_policy_applied_count = $blockPolicyNames.Count
+        block_policy_applied_count = $failureBlockPolicyRows.Count
         configured_enabled_block_policy_count = $enabledBlockPolicies.Count
         configured_report_only_block_policy_count = $reportOnlyBlockPolicies.Count
     }
 
-    evidence = @($evidenceRows)
+    evidence = @($deviceCodeRows)
 }
 
 $result |

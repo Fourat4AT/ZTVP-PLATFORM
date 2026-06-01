@@ -434,7 +434,8 @@ def _render_manual_tenant_evidence_form(path: Path, scenario_dir: Path) -> None:
 
 
 def _open_active_runs() -> None:
-    st.session_state.main_navigation = "Active Runs"
+    st.session_state["pending_navigation"] = {"main_navigation": "Active Runs"}
+    st.rerun()
 
 
 def _render_active_run_summary(run: dict, scenario_label: str) -> None:
@@ -1073,7 +1074,6 @@ def render_devdv006_runner(project_root: Path) -> None:
         _render_active_run_summary(current_run, "DEV-DV-006")
         if st.button("Open Active Runs", use_container_width=True, key="devdv006_open_active_runs"):
             _open_active_runs()
-            st.rerun()
 
     if st.button("Start Tenant Evidence Analysis", use_container_width=True, key="devdv006_analyze_button"):
         state = _load_json(state_path) if state_path.exists() else {}
@@ -1088,7 +1088,6 @@ def render_devdv006_runner(project_root: Path) -> None:
             st.caption(f"Run ID: {run.get('run_id')}")
             if st.button("Open Active Runs", use_container_width=True, key="devdv006_open_active_runs_after_start"):
                 _open_active_runs()
-                st.rerun()
 
     if report_path.exists():
         latest_report = _load_json(report_path)
