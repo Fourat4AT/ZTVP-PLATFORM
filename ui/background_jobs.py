@@ -754,12 +754,18 @@ def start_scenario_job(
             }
         )
     if scenario_id == "ID-DV-002":
+        evidence_start_utc = _arg_value(extra_args, "-EvidenceStartUtc", now)
         state.update(
             {
                 "phase": _phase_for_scenario(scenario_id),
                 "current_message": _initial_message(scenario_id, max_attempts),
                 "current_evidence_source": "Token endpoint + Entra sign-in logs",
+                "target": target,
+                "test_user": target,
+                "decoy_user": target,
                 "target_app": "Microsoft Graph PowerShell",
+                "validation_start_utc": evidence_start_utc,
+                "started_utc": now,
                 "tenant_evidence_status": "Waiting",
             }
         )
@@ -1970,6 +1976,10 @@ def _run_job(project_root: Path, scenario_id: str, run_id: str, wait_minutes: in
             token_issued=idc002_metrics.get("token_issued") if scenario_id == "ID-DV-002" else None,
             device_code_evidence_count=idc002_metrics.get("device_code_evidence_count") if scenario_id == "ID-DV-002" else None,
             blocked_evidence_count=idc002_metrics.get("blocked_evidence_count") if scenario_id == "ID-DV-002" else None,
+            matching_signin_found=idc002_metrics.get("matching_signin_found") if scenario_id == "ID-DV-002" else None,
+            meaningful_sign_in_count=idc002_metrics.get("meaningful_sign_in_count") if scenario_id == "ID-DV-002" else None,
+            validation_start_utc=report.get("validation_start_utc") if scenario_id == "ID-DV-002" else None,
+            started_utc=report.get("started_utc") if scenario_id == "ID-DV-002" else None,
             block_policy_names=", ".join([str(name) for name in (idc002_policy.get("block_policy_names") or [])]) if scenario_id == "ID-DV-002" else None,
             progress_percent=100,
             tenant_evidence_status=tenant_status,

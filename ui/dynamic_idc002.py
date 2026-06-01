@@ -33,12 +33,15 @@ EVIDENCE_COLUMNS = [
     "AppDisplayName",
     "ResourceDisplayName",
     "Status",
+    "StatusCode",
     "AuthenticationProtocol",
     "ClientAppUsed",
     "DeviceCodeEvidence",
     "ConditionalAccessStatus",
     "BlockPolicyApplied",
     "BlockPolicyNames",
+    "PolicyResult",
+    "GrantControls",
     "Success",
     "Blocked",
     "TokenLikelyIssuedFromLogs",
@@ -405,6 +408,11 @@ def _metric(label: str, value: object, tone: str = "") -> str:
 
 
 def _write_html_report(report: dict, html_path: Path) -> None:
+    from html_report import write_standard_html_report
+
+    write_standard_html_report(report, html_path)
+    return
+
     html_path.parent.mkdir(parents=True, exist_ok=True)
 
     metrics = report.get("metrics", {}) or {}
@@ -426,6 +434,8 @@ def _write_html_report(report: dict, html_path: Path) -> None:
 <td>{_safe(row.get("AuthenticationProtocol"))}</td>
 <td>{_safe(row.get("ConditionalAccessStatus"))}</td>
 <td>{_safe(row.get("BlockPolicyNames"))}</td>
+<td>{_safe(row.get("PolicyResult"))}</td>
+<td>{_safe(row.get("GrantControls"))}</td>
 <td>{_safe(row.get("Success"))}</td>
 <td>{_safe(row.get("Blocked"))}</td>
 <td>{_safe(row.get("TokenLikelyIssuedFromLogs"))}</td>
@@ -435,12 +445,14 @@ def _write_html_report(report: dict, html_path: Path) -> None:
 """
 
     if not rows:
-        rows = '<tr><td colspan="13">No sign-in evidence found in the selected window.</td></tr>'
+        rows = '<tr><td colspan="15">No sign-in evidence found in the selected window.</td></tr>'
 
     warning_rows = "".join([f"<li>{_safe(w)}</li>" for w in warnings]) or "<li>No warnings were generated.</li>"
     policy_names = attribution.get("block_policy_names", []) or []
     policy_names_text = ", ".join([str(x) for x in policy_names]) if policy_names else "None attributed"
     matched = report.get("matched_sign_in", {}) or {}
+    selected = report.get("selected_evidence_row") or matched
+    selected_policy = report.get("selected_blocking_policy") or {}
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     display_status = _friendly_status(report.get("status"))
 
@@ -522,10 +534,27 @@ pre {{ background:#0f172a; color:#e5e7eb; padding:18px; border-radius:16px; over
 <p><b>App:</b> {_safe(matched.get("AppDisplayName"))}</p>
 <p><b>Resource:</b> {_safe(matched.get("ResourceDisplayName"))}</p>
 <p><b>Status:</b> {_safe(matched.get("Status"))}</p>
+<p><b>Error Code:</b> {_safe(matched.get("StatusCode"))}</p>
+<p><b>Client:</b> {_safe(matched.get("ClientAppUsed"))}</p>
 <p><b>Conditional Access:</b> {_safe(matched.get("ConditionalAccessStatus"))}</p>
 <p><b>Request ID:</b> {_safe(matched.get("RequestId") or matched.get("SignInId"))}</p>
 <p><b>IP:</b> {_safe(matched.get("IpAddress"))}</p>
 <p><b>Blocking Policy:</b> {_safe(attribution.get("main_blocking_policy_name") or "Not attributed")}</p>
+<p><b>Policy Result:</b> {_safe(attribution.get("main_blocking_policy_result") or selected_policy.get("result"))}</p>
+<p><b>Grant Controls:</b> {_safe(attribution.get("main_blocking_policy_grant_controls") or selected_policy.get("grant_controls"))}</p>
+</div>
+
+<div class="card">
+<h2>Selected Evidence Row</h2>
+<p><b>Why selected:</b> {_safe(report.get("selected_evidence_reason"))}</p>
+<p><b>Time:</b> {_safe(selected.get("CreatedDateTime"))}</p>
+<p><b>User:</b> {_safe(selected.get("UserPrincipalName"))}</p>
+<p><b>App:</b> {_safe(selected.get("AppDisplayName"))}</p>
+<p><b>Resource:</b> {_safe(selected.get("ResourceDisplayName"))}</p>
+<p><b>Status:</b> {_safe(selected.get("Status"))}</p>
+<p><b>Error Code:</b> {_safe(selected.get("StatusCode"))}</p>
+<p><b>Client:</b> {_safe(selected.get("ClientAppUsed"))}</p>
+<p><b>Conditional Access:</b> {_safe(selected.get("ConditionalAccessStatus"))}</p>
 </div>
 
 <div class="card">
@@ -541,6 +570,8 @@ pre {{ background:#0f172a; color:#e5e7eb; padding:18px; border-radius:16px; over
 <th>Protocol</th>
 <th>CA Status</th>
 <th>Blocking Policy</th>
+<th>Policy Result</th>
+<th>Grant Controls</th>
 <th>Success</th>
 <th>Blocked</th>
 <th>Token Likely Issued</th>
@@ -659,14 +690,24 @@ def _render_report(report: dict, report_path: Path, html_path: Path, stdout: str
     {_metric("App", matched.get("AppDisplayName"))}
     {_metric("Resource", matched.get("ResourceDisplayName"))}
     {_metric("Status", matched.get("Status"))}
+    {_metric("Error Code", matched.get("StatusCode"))}
+    {_metric("Client", matched.get("ClientAppUsed"))}
     {_metric("CA Status", matched.get("ConditionalAccessStatus"))}
     {_metric("Request ID", matched.get("RequestId") or matched.get("SignInId"))}
     {_metric("IP", matched.get("IpAddress"))}
     {_metric("Blocking Policy", attribution.get("main_blocking_policy_name") or "Not attributed", "good" if attribution.get("main_blocking_policy_name") else "warn")}
+    {_metric("Policy Result", attribution.get("main_blocking_policy_result") or "Not attributed")}
+    {_metric("Grant Controls", attribution.get("main_blocking_policy_grant_controls") or "Not attributed")}
 </div>
 """,
             unsafe_allow_html=True,
         )
+
+    selected = report.get("selected_evidence_row") or matched
+    if selected:
+        st.markdown("#### Selected Evidence Row")
+        st.caption(report.get("selected_evidence_reason") or "")
+        st.json(selected)
 
     st.markdown("#### Sign-in Evidence")
 

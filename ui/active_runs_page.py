@@ -396,9 +396,10 @@ def _load_report(path: Path | None) -> dict[str, Any]:
     if path is None:
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8-sig"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception:
         return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _first_value(*values: object) -> str:
@@ -411,6 +412,38 @@ def _first_value(*values: object) -> str:
     return ""
 
 
+def _as_dict(value: object) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value: object) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if value in [None, ""]:
+        return []
+    return [value]
+
+
+def _normalize_evidence(value: object) -> tuple[dict[str, Any], list[Any]]:
+    if isinstance(value, dict):
+        return value, _as_list(value.get("items"))
+    if isinstance(value, list):
+        return {"items": value}, value
+    return {}, []
+
+
+def _report_with_safe_dict_fields(report: dict[str, Any], *field_names: str) -> dict[str, Any]:
+    safe_report = dict(report)
+    for field_name in field_names:
+        if field_name == "evidence":
+            safe_report[field_name] = _normalize_evidence(report.get(field_name))[0]
+        else:
+            safe_report[field_name] = _as_dict(report.get(field_name))
+    return safe_report
+
+
 def _enrich_run(project_root: Path, run: dict) -> dict:
     enriched = dict(run)
     report_path = _safe_report_path(project_root, enriched.get("report_path"))
@@ -419,10 +452,13 @@ def _enrich_run(project_root: Path, run: dict) -> dict:
         if candidate.exists():
             enriched["html_report_path"] = str(candidate)
     report = _load_report(report_path)
-    evidence = report.get("evidence") or {}
-    local = evidence.get("local") or {}
-    tenant_api = ((evidence.get("tenant") or {}).get("api") or {})
+    evidence, evidence_items = _normalize_evidence(report.get("evidence"))
+    local = _as_dict(evidence.get("local"))
+    tenant = _as_dict(evidence.get("tenant"))
+    tenant_api = _as_dict(tenant.get("api"))
     scenario_id = str(enriched.get("scenario_id") or "").upper()
+    if evidence_items:
+        enriched["evidence_items_count"] = len(evidence_items)
 
     if str(enriched.get("status") or "").lower() == "completed" and enriched.get("verdict"):
         enriched["progress_percent"] = 100
@@ -435,6 +471,8 @@ def _enrich_run(project_root: Path, run: dict) -> dict:
         if not enriched.get("tenant_evidence_status"):
             if tenant_api.get("mde_cloud_evidence_found"):
                 enriched["tenant_evidence_status"] = "Found"
+            elif evidence_items:
+                enriched["tenant_evidence_status"] = "Evidence items available"
             else:
                 enriched["tenant_evidence_status"] = _first_value(tenant_api.get("mde_cloud_query_status"), "Not recorded")
         if scenario_id == "DEV-DV-008":
@@ -461,37 +499,35 @@ def _enrich_run(project_root: Path, run: dict) -> dict:
             enriched["effective_policy"] = mfa.get("effective_policy")
             enriched["conditional_access_status"] = mfa.get("conditional_access_result")
         elif scenario_id in {"ID-DV-003", "ID-C-003"}:
-            metrics = report.get("metrics") or {}
-            policy = report.get("policy_attribution") or {}
-            mailbox = report.get("mailbox_readiness") or {}
-            mailbox_final = mailbox.get("final") if isinstance(mailbox, dict) else {}
-            if not isinstance(mailbox_final, dict):
-                mailbox_final = {}
+            metrics = _as_dict(report.get("metrics"))
+            policy = _as_dict(report.get("policy_attribution"))
+            mailbox = _as_dict(report.get("mailbox_readiness"))
+            mailbox_final = _as_dict(mailbox.get("final"))
             enriched["mailbox_ready"] = _first_value(enriched.get("mailbox_ready"), metrics.get("mailbox_ready"))
             enriched["protocols_tested"] = _first_value(enriched.get("protocols_tested"), metrics.get("protocols_tested"))
             enriched["protocol_success_count"] = _first_value(enriched.get("protocol_success_count"), metrics.get("protocol_success_count"), "0")
             enriched["protocol_blocked_or_denied_count"] = _first_value(enriched.get("protocol_blocked_or_denied_count"), metrics.get("protocol_blocked_or_denied_count"), "0")
             enriched["legacy_signin_evidence_count"] = _first_value(enriched.get("legacy_signin_evidence_count"), metrics.get("legacy_signin_evidence_count"), "0")
             enriched["legacy_block_policy_applied"] = _first_value(enriched.get("legacy_block_policy_applied"), policy.get("legacy_block_policy_applied"))
-            enriched["legacy_block_policy_names"] = _first_value(enriched.get("legacy_block_policy_names"), ", ".join([str(name) for name in (policy.get("legacy_block_policy_names") or [])]))
+            enriched["legacy_block_policy_names"] = _first_value(enriched.get("legacy_block_policy_names"), ", ".join([str(name) for name in _as_list(policy.get("legacy_block_policy_names"))]))
             enriched["mailbox_mail"] = _first_value(enriched.get("mailbox_mail"), mailbox_final.get("mail"))
             enriched["tenant_evidence_status"] = _first_value(enriched.get("tenant_evidence_status"), "Found" if metrics.get("legacy_signin_evidence_count") or metrics.get("entra_signins_retrieved") or metrics.get("legacy_block_policy_names_count") else "Not found")
             enriched["current_evidence_source"] = _first_value(enriched.get("current_evidence_source"), "legacy protocol tests + Entra sign-in logs")
         elif scenario_id in {"ID-DV-002", "ID-C-002"}:
-            metrics = report.get("metrics") or {}
-            token = report.get("token_polling") or {}
-            policy = report.get("policy_attribution") or {}
+            metrics = _as_dict(report.get("metrics"))
+            token = _as_dict(report.get("token_polling"))
+            policy = _as_dict(report.get("policy_attribution"))
             enriched["token_outcome"] = _first_value(enriched.get("token_outcome"), token.get("token_outcome"))
             enriched["token_issued"] = _first_value(enriched.get("token_issued"), metrics.get("token_issued"))
-            enriched["device_code_evidence_count"] = _first_value(enriched.get("device_code_evidence_count"), metrics.get("device_code_evidence_count"), "0")
+            enriched["device_code_evidence_count"] = _first_value(enriched.get("device_code_evidence_count"), metrics.get("device_code_evidence_count"), len(evidence_items) if evidence_items else None, "0")
             enriched["blocked_evidence_count"] = _first_value(enriched.get("blocked_evidence_count"), metrics.get("blocked_evidence_count"), "0")
-            enriched["block_policy_names"] = _first_value(enriched.get("block_policy_names"), ", ".join([str(name) for name in (policy.get("block_policy_names") or [])]))
+            enriched["block_policy_names"] = _first_value(enriched.get("block_policy_names"), ", ".join([str(name) for name in _as_list(policy.get("block_policy_names"))]))
             enriched["poll_attempts"] = _first_value(enriched.get("poll_attempts"), metrics.get("poll_attempts"), metrics.get("poll_count"))
-            enriched["tenant_evidence_status"] = _first_value(enriched.get("tenant_evidence_status"), "Found" if metrics.get("token_issued") or metrics.get("device_code_evidence_count") or metrics.get("blocked_evidence_count") else "Not found")
+            enriched["tenant_evidence_status"] = _first_value(enriched.get("tenant_evidence_status"), "Found" if metrics.get("token_issued") or metrics.get("device_code_evidence_count") or metrics.get("blocked_evidence_count") or evidence_items else "Not found")
             enriched["current_evidence_source"] = _first_value(enriched.get("current_evidence_source"), "Token endpoint + Entra sign-in logs")
         elif scenario_id == "APP-DV-003":
-            metrics = report.get("metrics") or {}
-            mdca = report.get("mdca_detection_evidence") or {}
+            metrics = _as_dict(report.get("metrics"))
+            mdca = _as_dict(report.get("mdca_detection_evidence"))
             if not enriched.get("tenant_evidence_status"):
                 enriched["tenant_evidence_status"] = "Found" if mdca.get("alert_detected") or mdca.get("governance_remediation_observed") else "Not found"
             if not enriched.get("poll_attempts"):
@@ -503,10 +539,10 @@ def _enrich_run(project_root: Path, run: dict) -> dict:
             if not enriched.get("detection_method"):
                 enriched["detection_method"] = metrics.get("detection_method") or mdca.get("detection_method")
         elif scenario_id in {"ID-DV-005", "ID-C-005"}:
-            metrics = report.get("metrics") or {}
-            latest = report.get("latest_admin_portal_attempt") or {}
-            policy = report.get("policy_attribution") or {}
-            guest = report.get("guest_user") or {}
+            metrics = _as_dict(report.get("metrics"))
+            latest = _as_dict(report.get("latest_admin_portal_attempt"))
+            policy = _as_dict(report.get("policy_attribution"))
+            guest = _as_dict(report.get("guest_user"))
             enriched["external_test_email"] = _first_value(enriched.get("external_test_email"), guest.get("external_email"), guest.get("user_principal_name"))
             enriched["latest_portal_result"] = _first_value(latest.get("resultCategory"), metrics.get("latest_admin_portal_attempt_result"))
             enriched["portal_app"] = _first_value(latest.get("appDisplayName"))
@@ -515,14 +551,14 @@ def _enrich_run(project_root: Path, run: dict) -> dict:
             enriched["conditional_access_status"] = _first_value(latest.get("conditionalAccessStatus"))
             enriched["status_error_code"] = _first_value(latest.get("statusErrorCode"))
             enriched["failure_reason"] = _first_value(latest.get("statusFailureReason"))
-            enriched["blocking_policy"] = ", ".join([str(x) for x in (latest.get("blockingPolicyNames") or policy.get("block_policy_names") or []) if str(x).strip()])
+            enriched["blocking_policy"] = ", ".join([str(x) for x in (_as_list(latest.get("blockingPolicyNames")) or _as_list(policy.get("block_policy_names"))) if str(x).strip()])
             enriched["poll_attempts"] = metrics.get("poll_attempts") or metrics.get("evidence_poll_count") or enriched.get("poll_attempts")
             enriched["max_poll_attempts"] = metrics.get("max_poll_attempts") or enriched.get("max_poll_attempts")
             enriched["total_evidence_search_time_seconds"] = metrics.get("total_evidence_search_time_seconds") or enriched.get("total_evidence_search_time_seconds")
             enriched["retry_interval_seconds"] = metrics.get("poll_interval_seconds") or enriched.get("retry_interval_seconds")
         elif scenario_id in {"ID-DV-004", "ID-C-004"}:
-            metrics = report.get("metrics") or {}
-            app = report.get("test_application") or {}
+            metrics = _as_dict(report.get("metrics"))
+            app = _as_dict(report.get("test_application"))
             enriched["target_app"] = _first_value(enriched.get("target_app"), app.get("display_name"))
             enriched["app_id"] = _first_value(enriched.get("app_id"), app.get("app_id"))
             enriched["service_principal_id"] = _first_value(enriched.get("service_principal_id"), app.get("service_principal_id"))
@@ -536,11 +572,11 @@ def _enrich_run(project_root: Path, run: dict) -> dict:
             enriched["tenant_evidence_status"] = _first_value(enriched.get("tenant_evidence_status"), "Found" if metrics.get("oauth_grant_created") else "Not found")
             enriched["current_evidence_source"] = _first_value(enriched.get("current_evidence_source"), report.get("tenant_evidence_source"), "Microsoft Graph oauth2PermissionGrant query")
         elif scenario_id in CLD_SHAREPOINT_IDS:
-            metrics = report.get("metrics") or {}
-            attempt = report.get("anonymous_link_attempt") or {}
-            cleanup = report.get("cleanup") or {}
-            site = report.get("site") or {}
-            test_object = report.get("test_object") or {}
+            metrics = _as_dict(report.get("metrics"))
+            attempt = _as_dict(report.get("anonymous_link_attempt"))
+            cleanup = _as_dict(report.get("cleanup"))
+            site = _as_dict(report.get("site"))
+            test_object = _as_dict(report.get("test_object"))
             link_created = bool(metrics.get("anonymous_link_created") or attempt.get("link_created"))
             link_denied = bool(metrics.get("anonymous_link_denied") or attempt.get("link_denied"))
             cleanup_done = bool(metrics.get("cleanup_completed") or str(cleanup.get("status") or "").lower() == "completed")
@@ -554,9 +590,9 @@ def _enrich_run(project_root: Path, run: dict) -> dict:
             enriched["tenant_evidence_status"] = "Found" if link_created or link_denied else _first_value(enriched.get("tenant_evidence_status"), "Not found")
             enriched["anonymous_link_attempt_status"] = "Allowed" if link_created else "Blocked/Denied" if link_denied else _first_value(enriched.get("anonymous_link_attempt_status"), "Not created")
         elif scenario_id == "APP-DV-004":
-            evidence = report.get("appdv004_evidence") or {}
-            metrics = report.get("metrics") or {}
-            ca = summarize_ca_access_report(report, "device")
+            evidence = _as_dict(report.get("appdv004_evidence"))
+            metrics = _as_dict(report.get("metrics"))
+            ca = summarize_ca_access_report(_report_with_safe_dict_fields(report, "appdv004_evidence", "sign_in_log_evidence", "evidence"), "device")
             enriched["test_user"] = _first_value(enriched.get("test_user"), report.get("test_user"))
             enriched["target_app"] = _first_value(enriched.get("target_app"), report.get("target_app"))
             enriched["validation_start_utc"] = _first_value(enriched.get("validation_start_utc"), report.get("started_utc"))
@@ -569,11 +605,11 @@ def _enrich_run(project_root: Path, run: dict) -> dict:
             enriched["sign_in_result"] = ca.get("sign_in_result")
             enriched["polling_stopped_early"] = metrics.get("polling_stopped_early")
         elif scenario_id == "DEV-DV-001":
-            evidence = report.get("sign_in_log_evidence") or {}
-            metrics = report.get("metrics") or {}
-            ca = summarize_ca_access_report(report, "device")
-            decoy = report.get("decoy_user") or {}
-            target = report.get("target") or {}
+            evidence = _as_dict(report.get("sign_in_log_evidence"))
+            metrics = _as_dict(report.get("metrics"))
+            ca = summarize_ca_access_report(_report_with_safe_dict_fields(report, "appdv004_evidence", "sign_in_log_evidence", "evidence"), "device")
+            decoy = _as_dict(report.get("decoy_user"))
+            target = _as_dict(report.get("target"))
             enriched["decoy_user"] = _first_value(enriched.get("decoy_user"), decoy.get("user_principal_name"), evidence.get("decoy_user"))
             enriched["test_user"] = _first_value(enriched.get("test_user"), enriched.get("decoy_user"))
             enriched["target_app"] = _first_value(enriched.get("target_app"), target.get("name"), report.get("target_app"))
@@ -588,21 +624,21 @@ def _enrich_run(project_root: Path, run: dict) -> dict:
                 enriched["blocking_policy_name"] = _first_value(ca.get("effective_policy"), metrics.get("device_trust_policy_name"), metrics.get("blocking_policy_name"), evidence.get("device_trust_policy_name"), evidence.get("blocking_policy_name"), "Not available")
                 enriched["effective_policy"] = enriched["blocking_policy_name"]
                 enriched["sign_in_result"] = ca.get("sign_in_result")
+                device_detail = _as_dict(evidence.get("device_detail"))
                 enriched["device_state"] = "Compliant: {0}; Managed: {1}".format(
-                    _first_value(metrics.get("device_is_compliant"), ((evidence.get("device_detail") or {}).get("is_compliant")), "Unknown"),
-                    _first_value(metrics.get("device_is_managed"), ((evidence.get("device_detail") or {}).get("is_managed")), "Unknown"),
+                    _first_value(metrics.get("device_is_compliant"), device_detail.get("is_compliant"), "Unknown"),
+                    _first_value(metrics.get("device_is_managed"), device_detail.get("is_managed"), "Unknown"),
                 )
             if not enriched.get("poll_attempts"):
                 enriched["poll_attempts"] = metrics.get("poll_attempts") or evidence.get("poll_count")
             if not enriched.get("max_poll_attempts"):
                 enriched["max_poll_attempts"] = metrics.get("max_poll_attempts") or evidence.get("max_poll_attempts")
         elif scenario_id == "DEV-DV-004":
-            metrics = report.get("metrics") or {}
-            evidence = report.get("evidence") or {}
-            found = report.get("what_ztvp_found") or {}
-            timer = report.get("timer") or {}
-            decoy = report.get("decoy_user") or {}
-            final_state = report.get("final_device_state") or {}
+            metrics = _as_dict(report.get("metrics"))
+            found = _as_dict(report.get("what_ztvp_found"))
+            timer = _as_dict(report.get("timer"))
+            decoy = _as_dict(report.get("decoy_user"))
+            final_state = _as_dict(report.get("final_device_state"))
             enriched["decoy_user"] = _first_value(enriched.get("decoy_user"), decoy.get("user_principal_name"))
             enriched["tenant_evidence_status"] = "Found" if metrics.get("device_registered_or_linked") or metrics.get("audit_events_found") or metrics.get("sign_in_evidence_found") else _first_value(enriched.get("tenant_evidence_status"), "Not found")
             enriched["final_device_state"] = _first_value(enriched.get("final_device_state"), metrics.get("final_device_state"), final_state.get("state"))
@@ -671,6 +707,7 @@ def _run_metric_tiles(run: dict, scenario_id: str, status: str) -> str:
         _metric_tile("Polls", _polls_label(run)),
         _metric_tile("Verdict", run.get("verdict") or "-"),
         _metric_tile("Tenant evidence", _first_value(run.get("tenant_evidence_status")) or "Not recorded"),
+        _metric_tile("Evidence items", run.get("evidence_items_count")),
         _metric_tile("Local evidence", run.get("local_evidence_status")),
     ]
     if scenario_id == "DEV-DV-004":

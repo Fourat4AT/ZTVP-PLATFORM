@@ -394,7 +394,7 @@ def _main_rows(report: dict[str, Any], verdict: str) -> list[tuple[str, str]]:
         return rows
 
     if sid in {"ID-DV-002", "ID-C-002"}:
-        matched = report.get("matched_sign_in") or {}
+        matched = report.get("selected_evidence_row") or report.get("matched_sign_in") or {}
         policy = report.get("policy_attribution") or {}
         metrics = report.get("metrics") or {}
         tenant_found = bool(metrics.get("tenant_evidence_found") or policy.get("tenant_evidence_found") or matched)
@@ -402,15 +402,21 @@ def _main_rows(report: dict[str, Any], verdict: str) -> list[tuple[str, str]]:
         return [
             ("Tenant evidence found", "Yes" if tenant_found else "No"),
             ("Matching sign-in found", "Yes" if matched else "No"),
+            ("Meaningful sign-ins", _first(metrics.get("meaningful_sign_in_count"), metrics.get("device_code_evidence_count"), default="0")),
             ("Evidence time UTC", _first(matched.get("CreatedDateTime"), metrics.get("latest_matching_signin_time_utc"), default="Not recorded")),
             ("User", _first(matched.get("UserPrincipalName"), (report.get("decoy_user") or {}).get("user_principal_name"), default="Not recorded")),
             ("App", _first(matched.get("AppDisplayName"), default="Not recorded")),
             ("Resource", _first(matched.get("ResourceDisplayName"), default="Not recorded")),
+            ("Client", _first(matched.get("ClientAppUsed"), default="Not recorded")),
             ("Status", _first(matched.get("Status"), default="Not recorded")),
+            ("Error code", _first(matched.get("StatusCode"), default="Not recorded")),
             ("CA status", _first(matched.get("ConditionalAccessStatus"), default="Not recorded")),
             ("IP", _first(matched.get("IpAddress"), default="Not recorded")),
             ("Request ID", _first(matched.get("RequestId"), matched.get("SignInId"), default="Not recorded")),
             ("Main blocking policy", policy_name),
+            ("Policy result", _first(policy.get("main_blocking_policy_result"), default="Not attributed")),
+            ("Grant controls", ", ".join([str(x) for x in (policy.get("main_blocking_policy_grant_controls") or [])]) or "Not attributed"),
+            ("Selected evidence reason", _first(report.get("selected_evidence_reason"), default="Not recorded")),
             ("Token issued", _yes_no(metrics.get("token_issued"))),
             ("Polls used", f"{_first(metrics.get('evidence_poll_attempts'), metrics.get('poll_attempts'), default='0')} / {_first(metrics.get('evidence_max_poll_attempts'), metrics.get('max_poll_attempts'), default='N/A')}"),
             ("Verdict basis", _first(report.get("final_claim"), _verdict_reason(verdict, report))),
@@ -752,7 +758,7 @@ def _evidence_rows(report: dict[str, Any]) -> list[dict[str, str]]:
         rows.append({"source": "MFA evidence", "found": _yes_no(mfa.get("mfa_required") == "Yes" or mfa.get("mfa_completed") == "Yes"), "object": mfa.get("grant_control") or "MFA", "timestamp": _first(report.get("generated_at"), report.get("completed_utc")), "notes": mfa.get("conclusion") or ""})
         return rows
     if sid in {"ID-DV-002", "ID-C-002"}:
-        matched = report.get("matched_sign_in") or {}
+        matched = report.get("selected_evidence_row") or report.get("matched_sign_in") or {}
         policy = report.get("policy_attribution") or {}
         policy_name = _first(policy.get("main_blocking_policy_name"), (report.get("metrics") or {}).get("main_blocking_policy_name"), default="Not attributed")
         rows.append(
@@ -770,7 +776,7 @@ def _evidence_rows(report: dict[str, Any]) -> list[dict[str, str]]:
                 "found": "Yes" if policy.get("main_blocking_policy_name") else "No",
                 "object": policy_name,
                 "timestamp": _first(matched.get("CreatedDateTime"), default="Not found"),
-                "notes": "Main blocking policy is selected from Result=Failure and Grant control=Block.",
+                "notes": f"Result: {_first(policy.get('main_blocking_policy_result'), default='Not attributed')}; Grant controls: {', '.join([str(x) for x in (policy.get('main_blocking_policy_grant_controls') or [])]) or 'Not attributed'}",
             }
         )
         return rows
@@ -1085,12 +1091,156 @@ pre {{ background:#101827; color:#e5edf7; padding:14px; border-radius:8px; overf
     return html_path
 
 
+def _write_idc002_html_report(report: dict[str, Any], html_path: Path, stdout: str = "") -> Path:
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    scenario_id = _first(report.get("display_id"), report.get("scenario_id"), default="ID-DV-002")
+    scenario_name = _first(report.get("scenario_name"), default="Device Code Flow Block Validation")
+    verdict = normalize_verdict(report.get("status"), report.get("verdict"))
+    risk = _first(report.get("risk"), default="UNKNOWN").upper()
+    tone = _tone(verdict)
+    metrics = report.get("metrics") or {}
+    policy = report.get("policy_attribution") or {}
+    decoy = report.get("decoy_user") or {}
+    target = report.get("target") if isinstance(report.get("target"), dict) else {}
+    matched = report.get("selected_evidence_row") or report.get("matched_sign_in") or {}
+    cleanup = _cleanup(report)
+    generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    target_user = _first(target.get("name"), target.get("user_principal_name"), decoy.get("user_principal_name"), report.get("test_user"), default="Not recorded")
+    app = _first(matched.get("AppDisplayName"), target.get("app"), default="Not recorded")
+    resource = _first(matched.get("ResourceDisplayName"), target.get("resource"), default="Not recorded")
+    client = _first(matched.get("ClientAppUsed"), default="Not recorded")
+    evidence_time = _first(matched.get("SignInCreatedUtc"), matched.get("CreatedDateTime"), metrics.get("latest_matching_signin_time_utc"), default="Not recorded")
+    attempts = _first(metrics.get("evidence_poll_attempts"), metrics.get("poll_attempts"), default="0")
+    max_attempts = _first(metrics.get("evidence_max_poll_attempts"), metrics.get("max_poll_attempts"), default="N/A")
+    tenant_found = bool(metrics.get("tenant_evidence_found") or policy.get("tenant_evidence_found") or matched)
+    matching_found = bool(metrics.get("matching_signin_found") or matched)
+    grant_controls = ", ".join([str(x) for x in (policy.get("main_blocking_policy_grant_controls") or [])]) or "Not attributed"
+    blocking_policy = _first(policy.get("main_blocking_policy_name"), metrics.get("main_blocking_policy_name"), default="Not attributed")
+    policy_result = _first(policy.get("main_blocking_policy_result"), default="Not attributed")
+    started = _first(report.get("started_utc"), (report.get("device_code_challenge") or {}).get("started_at"), metrics.get("evidence_start_utc"), report.get("validation_start_utc"), default="Not recorded")
+    validation_start = _first(report.get("validation_start_utc"), metrics.get("evidence_start_utc"), default="Not recorded")
+
+    if verdict == "PASS":
+        decision_text = "Device code flow was blocked by Conditional Access."
+    elif verdict == "FAIL":
+        decision_text = "Device code flow succeeded and token/sign-in evidence was found."
+    elif matched:
+        decision_text = "Device-code sign-in evidence was found, but no enforced block policy was attributed."
+    else:
+        decision_text = "No matching device-code sign-in evidence was found before timeout."
+
+    def _table(rows: list[tuple[str, object]]) -> str:
+        return "<table><tbody>" + "".join(f"<tr><th>{_safe(k)}</th><td>{_safe(v)}</td></tr>" for k, v in rows) + "</tbody></table>"
+
+    executive_rows = [
+        ("Verdict", verdict),
+        ("Risk", risk),
+        ("Reason", decision_text),
+        ("Tenant evidence found", "Yes" if tenant_found else "No"),
+        ("Matching sign-in found", "Yes" if matching_found else "No"),
+        ("Target decoy user", target_user),
+        ("Started UTC", started),
+        ("Validation start UTC", validation_start),
+    ]
+    tenant_rows = [
+        ("Evidence time UTC", evidence_time),
+        ("User", _first(matched.get("UserPrincipalName"), target_user, default="Not recorded")),
+        ("App", app),
+        ("Resource", resource),
+        ("Client", client),
+        ("Status", _first(matched.get("Status"), default="Not recorded")),
+        ("Error code", _first(matched.get("StatusCode"), default="Not recorded")),
+        ("Conditional Access status", _first(matched.get("ConditionalAccessStatus"), default="Not recorded")),
+        ("IP", _first(matched.get("IpAddress"), default="Not recorded")),
+        ("Request ID", _first(matched.get("RequestId"), matched.get("SignInId"), default="Not recorded")),
+        ("Selected evidence reason", _first(report.get("selected_evidence_reason"), default="Not recorded")),
+        ("Meaningful sign-ins", _first(metrics.get("meaningful_sign_in_count"), metrics.get("device_code_evidence_count"), default="0")),
+    ]
+    ca_rows = [
+        ("Main blocking policy", blocking_policy),
+        ("Policy result", policy_result),
+        ("Grant controls", grant_controls),
+        ("Block policy applied", _yes_no(policy.get("device_code_block_policy_applied"))),
+        ("Configured enabled block policies", _first(metrics.get("configured_enabled_block_policy_count"), default="0")),
+        ("Configured report-only block policies", _first(metrics.get("configured_report_only_block_policy_count"), default="0")),
+    ]
+    polling_rows = [
+        ("Poll interval seconds", _first(metrics.get("evidence_poll_interval_seconds"), default="15")),
+        ("Polls used / max polls", f"{attempts} / {max_attempts}"),
+        ("Token issued", _yes_no(metrics.get("token_issued"))),
+        ("Token outcome", _first((report.get("token_polling") or {}).get("token_outcome"), policy.get("token_outcome"), default="Not recorded")),
+        ("Evidence stopped early", _yes_no(metrics.get("evidence_stopped_early"))),
+        ("Polling stopped early", _yes_no(metrics.get("polling_stopped_early"))),
+    ]
+    cleanup_rows = [
+        ("Cleanup required", cleanup["required"]),
+        ("Cleanup completed", cleanup["completed"]),
+        ("Remaining risk", cleanup["remaining"]),
+        ("Emergency cleanup needed", cleanup["emergency"]),
+    ]
+
+    technical = json.dumps(_scrub(report), indent=2, ensure_ascii=False)
+    if stdout:
+        technical += f"\n\nPowerShell output:\n{stdout}"
+
+    html_doc = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{_safe(scenario_id)} - {_safe(scenario_name)}</title>
+<style>
+body {{ margin:0; background:#f7f9fc; color:#172033; font-family:Segoe UI,Arial,sans-serif; line-height:1.55; }}
+.page {{ max-width:1180px; margin:0 auto; padding:32px 24px 48px; }}
+.header {{ background:#0f172a; color:white; border-radius:8px; padding:24px; }}
+h1 {{ margin:0 0 6px; font-size:28px; }}
+h2 {{ margin:30px 0 12px; font-size:20px; }}
+.muted {{ color:#64748b; }}
+.header .muted {{ color:#cbd5e1; }}
+.decision {{ margin-top:18px; border-radius:8px; padding:18px; color:white; }}
+.decision.pass {{ background:#15803d; }}
+.decision.partial {{ background:#b45309; }}
+.decision.fail {{ background:#b91c1c; }}
+.decision.muted {{ background:#6b7280; }}
+.section {{ background:white; border:1px solid #dbe4ef; border-radius:8px; padding:20px; margin-top:18px; }}
+table {{ width:100%; border-collapse:collapse; margin-top:8px; }}
+th,td {{ text-align:left; vertical-align:top; border-bottom:1px solid #e5ebf3; padding:10px 12px; }}
+th {{ width:280px; color:#475569; background:#f8fafc; }}
+details {{ margin-top:18px; background:white; border:1px solid #dbe4ef; border-radius:8px; padding:14px 16px; }}
+summary {{ cursor:pointer; font-weight:700; }}
+pre {{ background:#101827; color:#e5edf7; padding:14px; border-radius:8px; overflow:auto; white-space:pre-wrap; }}
+@media (max-width:850px) {{ th {{ width:auto; display:block; }} td {{ display:block; }} }}
+</style>
+</head>
+<body>
+<main class="page">
+  <section class="header">
+    <h1>{_safe(scenario_id)} - {_safe(scenario_name)}</h1>
+    <div class="muted">Generated at {_safe(generated)}</div>
+  </section>
+  <section class="decision {_safe(tone)}"><strong>{_safe(verdict)} / Risk { _safe(risk) }</strong><br>{_safe(decision_text)}</section>
+  <section class="section"><h2>1. Executive Result</h2>{_table(executive_rows)}</section>
+  <section class="section"><h2>2. Tenant Evidence</h2>{_table(tenant_rows)}</section>
+  <section class="section"><h2>3. Conditional Access Evidence</h2>{_table(ca_rows)}</section>
+  <section class="section"><h2>4. Polling Summary</h2>{_table(polling_rows)}</section>
+  <section class="section"><h2>5. Cleanup Status</h2>{_table(cleanup_rows)}</section>
+  <details><summary>6. Technical Details</summary><pre>{_safe(technical)}</pre></details>
+</main>
+</body>
+</html>
+"""
+    html_path.write_text(html_doc, encoding="utf-8")
+    return html_path
+
+
 def write_standard_html_report(report: dict[str, Any], html_path: Path, stdout: str = "") -> Path:
     html_path.parent.mkdir(parents=True, exist_ok=True)
     scenario_id = _first(report.get("display_id"), report.get("scenario_id"), default="Unknown scenario")
     scenario_name = _first(report.get("scenario_name"), default="Unknown scenario")
     if str(scenario_id).upper() == "DEV-DV-004":
         return _write_devdv004_html_report(report, html_path, stdout=stdout)
+    if str(scenario_id).upper() in {"ID-DV-002", "ID-C-002"}:
+        return _write_idc002_html_report(report, html_path, stdout=stdout)
     verdict = normalize_verdict(report.get("status"), report.get("verdict"))
     tone = _tone(verdict)
     risk = _first(report.get("risk"), default="UNKNOWN").upper()
