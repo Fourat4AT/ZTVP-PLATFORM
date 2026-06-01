@@ -23,6 +23,19 @@ _REGISTRY: dict[str, subprocess.Popen[str] | None] = {}
 _RUN_ARGS: dict[str, list[str]] = {}
 CLD_SHAREPOINT_IDS = {"APP-DV-008", "CLD-DV-001", "CLD-C-001"}
 
+DEVICE_RUNTIME_TO_PUBLIC = {
+    "DEV-DV-004": "DEV-DV-002",
+    "DEV-DV-006": "DEV-DV-003",
+    "DEV-DV-008": "DEV-DV-004",
+}
+
+DEVICE_PUBLIC_NAMES = {
+    "DEV-DV-001": "Unmanaged Device Cloud Access Probe",
+    "DEV-DV-002": "Sandbox Device Registration Abuse Probe",
+    "DEV-DV-003": "Defender EICAR Detection Validation",
+    "DEV-DV-004": "Hybrid Tamper Protection Validation",
+}
+
 
 SCENARIOS = {
     "ID-DV-001": {
@@ -57,16 +70,20 @@ SCENARIOS = {
         "report": Path("powershell") / "Reports" / "Dynamic" / "DEV-DV-001-result.json",
         "html": Path("powershell") / "Reports" / "Dynamic" / "Html" / "DEV-DV-001-result.html",
     },
-    "DEV-DV-006": {
+    "DEV-DV-003": {
         "name": "Defender EICAR Detection Validation",
+        "runtime_id": "DEV-DV-006",
+        "public_id": "DEV-DV-003",
         "script": Path("powershell") / "Engines" / "DynamicValidation" / "Analyze-ZTVP-DEVDV006.ps1",
         "state": Path("powershell") / "Reports" / "Dynamic" / "DEV-DV-006" / "devdv006-state.json",
         "local_evidence": Path("powershell") / "Reports" / "Dynamic" / "DEV-DV-006" / "devdv006-local-evidence.json",
         "report": Path("powershell") / "Reports" / "Dynamic" / "DEV-DV-006-result.json",
         "html": Path("powershell") / "Reports" / "Dynamic" / "DEV-DV-006-result.html",
     },
-    "DEV-DV-008": {
+    "DEV-DV-004": {
         "name": "Hybrid Tamper Protection Validation",
+        "runtime_id": "DEV-DV-008",
+        "public_id": "DEV-DV-004",
         "script": Path("powershell") / "Engines" / "DynamicValidation" / "Analyze-ZTVP-DEVDV008.ps1",
         "state": Path("powershell") / "Reports" / "Dynamic" / "DEV-DV-008" / "devdv008-state.json",
         "local_evidence": Path("powershell") / "Reports" / "Dynamic" / "DEV-DV-008" / "devdv008-local-evidence.json",
@@ -97,8 +114,10 @@ SCENARIOS = {
         "report": Path("powershell") / "Reports" / "Dynamic" / "CLD-C-001-result.json",
         "html": Path("powershell") / "Reports" / "Dynamic" / "Html" / "CLD-C-001-result.html",
     },
-    "DEV-DV-004": {
+    "DEV-DV-002": {
         "name": "Sandbox Device Registration Abuse Probe",
+        "runtime_id": "DEV-DV-004",
+        "public_id": "DEV-DV-002",
         "script": Path("powershell") / "Engines" / "DynamicValidation" / "Analyze-ZTVP-DEVDV004.ps1",
         "state": Path("powershell") / "Reports" / "Dynamic" / "DEV-DV-004" / "devdv004-state.json",
         "local_evidence": Path("powershell") / "Reports" / "Dynamic" / "DEV-DV-004" / "devdv004-state.json",
@@ -123,6 +142,9 @@ SCENARIOS = {
     },
 }
 
+SCENARIOS["DEV-DV-006"] = {**SCENARIOS["DEV-DV-003"]}
+SCENARIOS["DEV-DV-008"] = {**SCENARIOS["DEV-DV-004"]}
+
 
 def _read_json(path: Path) -> dict[str, Any]:
     import json
@@ -133,6 +155,71 @@ def _read_json(path: Path) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception:
         return {}
+
+
+def _runtime_scenario_id(scenario_id: str) -> str:
+    meta = SCENARIOS.get(str(scenario_id or "").upper()) or {}
+    return str(meta.get("runtime_id") or scenario_id or "").upper()
+
+
+def _public_scenario_id(scenario_id: str) -> str:
+    meta = SCENARIOS.get(str(scenario_id or "").upper()) or {}
+    runtime_id = str(meta.get("runtime_id") or scenario_id or "").upper()
+    return str(meta.get("public_id") or DEVICE_RUNTIME_TO_PUBLIC.get(runtime_id) or scenario_id or "").upper()
+
+
+def _device_scenario_kind(scenario_id: str) -> str:
+    runtime_id = _runtime_scenario_id(scenario_id)
+    if runtime_id == "DEV-DV-004":
+        return "sandbox_registration"
+    if runtime_id == "DEV-DV-006":
+        return "eicar"
+    if runtime_id == "DEV-DV-008":
+        return "hybrid_tamper"
+    if runtime_id == "DEV-DV-001":
+        return "unmanaged_access"
+    return ""
+
+
+def _normalize_report_identity(report: dict[str, Any], scenario_id: str, run_id: str | None = None) -> dict[str, Any]:
+    if not isinstance(report, dict):
+        return {}
+    normalized = dict(report)
+    public_id = _public_scenario_id(scenario_id)
+    if public_id in DEVICE_PUBLIC_NAMES:
+        normalized["runtime_scenario_id"] = _runtime_scenario_id(scenario_id)
+        normalized["scenario_id"] = public_id
+        normalized["display_id"] = public_id
+        normalized["scenario_name"] = DEVICE_PUBLIC_NAMES[public_id]
+        normalized["pillar"] = "Devices"
+        normalized["scope"] = "Cloud"
+    else:
+        normalized.setdefault("scenario_id", scenario_id)
+        normalized.setdefault("display_id", scenario_id)
+    if run_id:
+        normalized["run_id"] = run_id
+    return normalized
+
+
+def _device_report_kind(report: dict[str, Any]) -> str:
+    if not isinstance(report, dict):
+        return ""
+    sid = str(report.get("display_id") or report.get("scenario_id") or "").upper()
+    runtime_id = str(report.get("runtime_scenario_id") or "").upper()
+    name = str(report.get("scenario_name") or "").lower()
+    if sid == "DEV-DV-002" or runtime_id == "DEV-DV-004" or ("sandbox" in name and "registration" in name):
+        return "sandbox_registration"
+    if sid == "DEV-DV-003" or runtime_id == "DEV-DV-006" or "eicar" in name:
+        return "eicar"
+    if sid == "DEV-DV-004" or runtime_id == "DEV-DV-008" or "tamper" in name:
+        return "hybrid_tamper"
+    if sid == "DEV-DV-006":
+        return "eicar"
+    if sid == "DEV-DV-008":
+        return "hybrid_tamper"
+    if sid == "DEV-DV-001":
+        return "unmanaged_access"
+    return ""
 
 
 def _powershell_exe() -> str:
@@ -183,14 +270,14 @@ def _local_status(local_evidence: dict[str, Any], scenario_id: str) -> str:
     if not local_evidence:
         return "Missing"
     summary = local_evidence.get("local_summary") or {}
-    if scenario_id == "DEV-DV-008" and summary.get("settings_weakened") is True:
+    if _device_scenario_kind(scenario_id) == "hybrid_tamper" and summary.get("settings_weakened") is True:
         return "Settings weakened"
     return "Found"
 
 
 def _local_proof(local_evidence: dict[str, Any], scenario_id: str) -> dict[str, Any]:
     summary = local_evidence.get("local_summary") or {}
-    if scenario_id == "DEV-DV-008":
+    if _device_scenario_kind(scenario_id) == "hybrid_tamper":
         tamper_enabled = bool(summary.get("tamper_protection_enabled_before") or summary.get("tamper_protection_enabled_after"))
         settings_weakened = bool(summary.get("settings_weakened"))
         protected = bool(summary.get("defender_settings_remained_protected") or summary.get("tamper_attempt_blocked_or_ignored")) and not settings_weakened
@@ -205,6 +292,7 @@ def _local_proof(local_evidence: dict[str, Any], scenario_id: str) -> dict[str, 
 
 
 def _tenant_status(report: dict[str, Any]) -> str:
+    device_kind = _device_report_kind(report)
     if str(report.get("display_id") or report.get("scenario_id") or "").upper() in CLD_SHAREPOINT_IDS:
         metrics = report.get("metrics") or {}
         if metrics.get("anonymous_link_created") or metrics.get("anonymous_link_denied"):
@@ -251,7 +339,7 @@ def _tenant_status(report: dict[str, Any]) -> str:
         if metrics.get("public_link_created") is False:
             return "Not found"
         return "Not found"
-    if str(report.get("scenario_id") or "").upper() == "DEV-DV-004":
+    if device_kind == "sandbox_registration":
         metrics = report.get("metrics") or {}
         sources = report.get("evidence_sources") or {}
         if metrics.get("device_registered_or_linked") or metrics.get("audit_events_found") or metrics.get("sign_in_evidence_found"):
@@ -290,6 +378,7 @@ def _validation_start_from_state(scenario_state: dict[str, Any]) -> str:
 
 
 def _phase_for_scenario(scenario_id: str) -> str:
+    device_kind = _device_scenario_kind(scenario_id)
     if scenario_id in CLD_SHAREPOINT_IDS:
         return "Running SharePoint createLink test"
     if scenario_id == "ID-DV-001":
@@ -300,8 +389,10 @@ def _phase_for_scenario(scenario_id: str) -> str:
         return "Testing legacy protocols and collecting Entra evidence"
     if scenario_id in {"APP-DV-004", "DEV-DV-001"}:
         return "Waiting for Entra sign-in / Conditional Access evidence"
-    if scenario_id == "DEV-DV-004":
+    if device_kind == "sandbox_registration":
         return "Checking registeredDevices and device lifecycle audit logs"
+    if device_kind == "hybrid_tamper":
+        return "Analyzing local tamper evidence and Defender XDR telemetry"
     if scenario_id == "APP-DV-003":
         return "Polling MDCA Alerts API"
     return "Waiting for tenant evidence"
@@ -415,6 +506,7 @@ def _idc001_lookback(extra_args: list[str] | None, wait_minutes: int) -> int:
 
 
 def _initial_message(scenario_id: str, max_attempts: int) -> str:
+    device_kind = _device_scenario_kind(scenario_id)
     if scenario_id in CLD_SHAREPOINT_IDS:
         return "Creating dummy file and attempting anonymous createLink."
     if scenario_id == "ID-DV-001":
@@ -427,14 +519,17 @@ def _initial_message(scenario_id: str, max_attempts: int) -> str:
         return "Waiting for unmanaged-device sign-in evidence."
     if scenario_id == "APP-DV-004":
         return f"Waiting for Entra sign-in / Conditional Access evidence. Attempt 1 of {max_attempts}."
-    if scenario_id == "DEV-DV-004":
-        return "Checking registeredDevices for the DEV-DV-004 decoy user."
+    if device_kind == "sandbox_registration":
+        return "Checking registeredDevices for the DEV-DV-002 decoy user."
+    if device_kind == "hybrid_tamper":
+        return "Checking local tamper evidence and Defender XDR tenant evidence."
     if scenario_id == "APP-DV-003":
         return "APP-DV-003 started. Creating dummy public link, then polling MDCA Alerts API."
     return f"Waiting for tenant evidence. Attempt 1 of {max_attempts}."
 
 
 def _poll_message(scenario_id: str, attempt: int, max_attempts: int, poll_seconds: int) -> tuple[str, str]:
+    device_kind = _device_scenario_kind(scenario_id)
     if scenario_id in CLD_SHAREPOINT_IDS:
         return "Microsoft Graph createLink", "Testing anonymous/public sharing link creation and cleanup."
     if scenario_id == "ID-DV-001":
@@ -447,13 +542,15 @@ def _poll_message(scenario_id: str, attempt: int, max_attempts: int, poll_second
         return "Entra sign-in logs", f"Waiting for unmanaged-device sign-in evidence. Attempt {attempt} of {max_attempts}."
     if scenario_id == "APP-DV-004":
         return "sign-in logs + Conditional Access", f"Waiting for Entra sign-in / Conditional Access evidence. Attempt {attempt} of {max_attempts}."
-    if scenario_id == "DEV-DV-004":
+    if device_kind == "sandbox_registration":
         step = (attempt - 1) % 3
         if step == 0:
-            return "registeredDevices", "Checking registeredDevices for the DEV-DV-004 decoy user."
+            return "registeredDevices", "Checking registeredDevices for the DEV-DV-002 decoy user."
         if step == 1:
             return "Entra audit logs", "Checking Entra audit logs for device registration lifecycle events."
         return "registeredDevices + audit logs", f"No device is currently linked to the decoy user. Poll {attempt} of {max_attempts}; retrying in {poll_seconds} seconds."
+    if device_kind == "hybrid_tamper":
+        return "Defender XDR Advanced Hunting", f"Checking Defender XDR tamper evidence. Attempt {attempt} of {max_attempts}."
     if scenario_id == "APP-DV-003":
         return "MDCA Alerts API", f"Polling MDCA Alerts API. Attempt {attempt} of {max_attempts}."
     return "tenant evidence", f"Waiting for tenant evidence. Attempt {attempt} of {max_attempts}."
@@ -473,6 +570,7 @@ def _write_run_report(
     stdout: str = "",
 ) -> tuple[Path | None, Path | None]:
     meta = SCENARIOS[scenario_id]
+    report = _normalize_report_identity(report, scenario_id, run_id)
     dynamic_report_path = project_root / meta["report"]
     dynamic_html_path = project_root / meta["html"]
     active_dir = project_root / "powershell" / "Reports" / "ActiveRuns"
@@ -678,8 +776,11 @@ def start_scenario_job(
 ) -> dict[str, Any]:
     project_root = Path(project_root)
     scenario_id = scenario_id.upper()
+    scenario_id = {"DEV-DV-006": "DEV-DV-003", "DEV-DV-008": "DEV-DV-004"}.get(scenario_id, scenario_id)
     if scenario_id not in SCENARIOS:
         raise ValueError(f"Background jobs are not wired for {scenario_id}.")
+    runtime_id = _runtime_scenario_id(scenario_id)
+    device_kind = _device_scenario_kind(scenario_id)
 
     existing = get_active_run(project_root, scenario_id)
     if existing and not resume:
@@ -725,7 +826,7 @@ def start_scenario_job(
         "retry_interval_seconds": int(poll_seconds),
         "elapsed_seconds": 0,
         "remaining_seconds": int(wait_minutes) * 60,
-        "current_evidence_source": "registeredDevices + audit logs" if scenario_id == "DEV-DV-004" else "Entra sign-in logs" if scenario_id in {"APP-DV-004", "DEV-DV-001"} else "tenant evidence",
+        "current_evidence_source": "registeredDevices + audit logs" if device_kind == "sandbox_registration" else "Entra sign-in logs" if scenario_id in {"APP-DV-004", "DEV-DV-001"} else "tenant evidence",
         "final_device_state": None,
         "registered_devices_linked_count": None,
         "audit_events_found": None,
@@ -876,7 +977,7 @@ def start_scenario_job(
                 else [
                     *(
                         ["-RunId", run_id]
-                        if scenario_id == "DEV-DV-004"
+                        if device_kind == "sandbox_registration"
                         else []
                     ),
                     "-WaitMinutes",
@@ -1625,6 +1726,7 @@ def _run_iddv004_job(project_root: Path, run_id: str, wait_minutes: int, poll_se
 
 def _run_job(project_root: Path, scenario_id: str, run_id: str, wait_minutes: int, poll_seconds: int) -> None:
     meta = SCENARIOS[scenario_id]
+    device_kind = _device_scenario_kind(scenario_id)
     script_path = project_root / meta["script"]
     report_path = project_root / meta["report"]
     html_path = project_root / meta["html"]
@@ -1653,7 +1755,7 @@ def _run_job(project_root: Path, scenario_id: str, run_id: str, wait_minutes: in
             progress_percent=1,
             phase=_phase_for_scenario(scenario_id),
             current_message=_initial_message(scenario_id, max_attempts),
-            current_evidence_source="registeredDevices" if scenario_id == "DEV-DV-004" else None,
+            current_evidence_source="registeredDevices" if device_kind == "sandbox_registration" else None,
             tenant_evidence_status="Waiting",
         )
         scenario_state = _read_json(project_root / meta["state"])
@@ -1676,7 +1778,7 @@ def _run_job(project_root: Path, scenario_id: str, run_id: str, wait_minutes: in
                 "-RunId",
                 run_id,
             ]
-        elif scenario_id == "DEV-DV-004":
+        elif device_kind == "sandbox_registration":
             ps_args = [
                 _powershell_exe(),
                 "-NoProfile",
@@ -1872,7 +1974,10 @@ def _run_job(project_root: Path, scenario_id: str, run_id: str, wait_minutes: in
             )
             return
 
-        report = _read_json(report_path)
+        report = _normalize_report_identity(_read_json(report_path), scenario_id, run_id)
+        if report:
+            report_path.parent.mkdir(parents=True, exist_ok=True)
+            report_path.write_text(__import__("json").dumps(report, indent=2), encoding="utf-8")
         verdict = _verdict_from_status(report.get("status"))
         tenant_status = _tenant_status(report)
         if tenant_status == "Found":
@@ -1893,7 +1998,7 @@ def _run_job(project_root: Path, scenario_id: str, run_id: str, wait_minutes: in
             final_message = str(report.get("final_claim") or report.get("executive_summary") or final_message)
         if scenario_id == "ID-DV-003":
             final_message = str(report.get("final_claim") or report.get("executive_summary") or final_message)
-        if scenario_id == "DEV-DV-004":
+        if device_kind == "sandbox_registration":
             timer = report.get("timer") or {}
             final_state = ((report.get("final_device_state") or {}).get("state") or (report.get("metrics") or {}).get("final_device_state") or "Unknown")
             if timer.get("stopped_early"):

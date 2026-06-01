@@ -12,6 +12,21 @@ from ca_summary import mfa_recommendations, summarize_ca_access_report, summariz
 CLD_SHAREPOINT_IDS = {"APP-DV-008", "CLD-DV-001", "CLD-C-001"}
 
 
+def _device_report_kind(report: dict[str, Any]) -> str:
+    sid = str(report.get("display_id") or report.get("scenario_id") or "").upper()
+    runtime_id = str(report.get("runtime_scenario_id") or "").upper()
+    name = str(report.get("scenario_name") or "").lower()
+    if sid == "DEV-DV-002" or runtime_id == "DEV-DV-004" or ("sandbox" in name and "registration" in name):
+        return "sandbox_registration"
+    if sid in {"DEV-DV-003", "DEV-DV-006"} or runtime_id == "DEV-DV-006" or "eicar" in name:
+        return "eicar"
+    if sid in {"DEV-DV-004", "DEV-DV-008"} or runtime_id == "DEV-DV-008" or "tamper" in name:
+        return "hybrid_tamper"
+    if sid == "DEV-DV-001":
+        return "unmanaged_access"
+    return ""
+
+
 def _safe(value: object) -> str:
     return html.escape("" if value is None else str(value))
 
@@ -68,11 +83,12 @@ def _tone(verdict: str) -> str:
 
 def _risk_explanation(verdict: str, risk: str, report: dict[str, Any] | None = None) -> str:
     report = report or {}
+    device_kind = _device_report_kind(report)
     risk = (risk or "UNKNOWN").upper()
     if verdict == "PASS" and risk == "LOW":
         if str(report.get("display_id") or report.get("scenario_id") or "").upper() in CLD_SHAREPOINT_IDS:
             return "Risk is low because Microsoft Graph createLink did not create an anonymous sharing link for the controlled dummy file."
-        if str(report.get("scenario_id") or "").upper() == "DEV-DV-004":
+        if device_kind == "sandbox_registration":
             return "Risk is low because no device remained linked to the decoy user and no strong successful registration proof was found."
         if str(report.get("scenario_id") or "").upper() == "DEV-DV-001":
             return "Risk is low because the unmanaged or non-compliant device access attempt was blocked by device-trust Conditional Access enforcement."
@@ -82,7 +98,7 @@ def _risk_explanation(verdict: str, risk: str, report: dict[str, Any] | None = N
     if verdict == "FAIL" and risk == "HIGH":
         if str(report.get("display_id") or report.get("scenario_id") or "").upper() in CLD_SHAREPOINT_IDS:
             return "Risk is high because SharePoint allowed an anonymous/public sharing link for the controlled dummy file."
-        if str(report.get("scenario_id") or "").upper() == "DEV-DV-004":
+        if device_kind == "sandbox_registration":
             return "Risk is high because registeredDevices confirmed a device linked to the normal decoy user."
         if str(report.get("scenario_id") or "").upper() == "DEV-DV-001":
             return "Risk is high because the decoy user accessed the target cloud app from an unmanaged or non-compliant device without a matching device-trust block."
@@ -96,7 +112,7 @@ def _risk_explanation(verdict: str, risk: str, report: dict[str, Any] | None = N
             if _is_devdv001_no_evidence(report):
                 return "Risk remains medium because ZTVP could not confirm the unmanaged-device access attempt from tenant evidence."
             return "Risk remains medium because a sign-in was found, but the Conditional Access or device-trust evidence was incomplete."
-        if str(report.get("scenario_id") or "").upper() == "DEV-DV-004":
+        if device_kind == "sandbox_registration":
             return "Risk remains medium because device registration activity was found, but the final linked-device state was removed or unclear."
         if str(report.get("scenario_id") or "").upper() == "APP-DV-004":
             return "Risk remains medium because the sign-in was found, but the Conditional Access/device evidence was incomplete."
@@ -109,19 +125,20 @@ def _risk_explanation(verdict: str, risk: str, report: dict[str, Any] | None = N
 def _what_was_tested(report: dict[str, Any]) -> str:
     sid = str(report.get("display_id") or report.get("scenario_id") or "").upper()
     name = str(report.get("scenario_name") or "").lower()
+    device_kind = _device_report_kind(report)
     if sid in {"APP-DV-003", "APP-C-003"} or "mdca" in name or "public file" in name:
         return "ZTVP created a harmless dummy SharePoint file, attempted to create an anonymous view link, then checked MDCA for alert or governance evidence."
     if sid in CLD_SHAREPOINT_IDS:
         return "ZTVP created a temporary dummy SharePoint file and attempted to create an anonymous/public sharing link using Microsoft Graph createLink. The test file was then cleaned up."
-    if sid == "DEV-DV-006" or "eicar" in name:
+    if device_kind == "eicar":
         return "ZTVP used a safe EICAR test pattern to verify Defender detection and tenant-side evidence."
     if sid == "APP-DV-007" or "app registration" in name:
         return "ZTVP used a normal decoy user to attempt app registration creation through Microsoft Graph."
-    if sid == "DEV-DV-008" or "tamper" in name:
+    if device_kind == "hybrid_tamper":
         return "ZTVP attempted controlled Defender preference changes on a test endpoint, then checked local evidence and Defender XDR tenant telemetry."
     if sid == "DEV-DV-001":
         return "ZTVP created a temporary normal decoy user, asked the operator to access Microsoft 365 from Windows Sandbox or another unmanaged/non-compliant context, then checked Entra sign-in logs and Conditional Access device-trust evidence."
-    if sid == "DEV-DV-004":
+    if device_kind == "sandbox_registration":
         return "ZTVP created a temporary normal decoy user, asked the operator to attempt Windows Sandbox work/school device registration, then checked registeredDevices, Entra audit logs, and supporting sign-in logs."
     if sid == "APP-DV-004" or "unmanaged device" in name:
         return "ZTVP asked the operator to access a sensitive cloud app from Windows Sandbox or another unmanaged/non-compliant endpoint, then checked Entra sign-in logs and Conditional Access results."
@@ -137,7 +154,7 @@ def _verdict_reason(verdict: str, report: dict[str, Any]) -> str:
         if metrics.get("anonymous_link_denied") or attempt.get("link_denied"):
             return "ZTVP attempted to create an anonymous sharing link, but SharePoint denied the request. No anonymous link was created."
         return "No anonymous link was created, but ZTVP could not confidently classify the denial reason."
-    if str(report.get("scenario_id") or "").upper() == "DEV-DV-004" and report.get("what_ztvp_thinks_happened"):
+    if _device_report_kind(report) == "sandbox_registration" and report.get("what_ztvp_thinks_happened"):
         return str(report["what_ztvp_thinks_happened"])
     if _is_devdv001_no_evidence(report):
         sign_in = report.get("sign_in_log_evidence") or {}
@@ -252,7 +269,7 @@ def _polling_rows(report: dict[str, Any]) -> list[tuple[str, str]]:
             ("Matching sign-in found", "Yes" if found else "No"),
             ("Result", "Evidence found" if found else "Timeout / No matching sign-in found"),
         ]
-    if str(report.get("scenario_id") or "").upper() == "DEV-DV-004":
+    if _device_report_kind(report) == "sandbox_registration":
         attempts = _first(metrics.get("poll_attempts"), timer.get("poll_attempts"), default="0")
         max_attempts = _first(metrics.get("max_poll_attempts"), timer.get("max_poll_attempts"), default="N/A")
         return [
@@ -336,7 +353,7 @@ def _main_rows(report: dict[str, Any], verdict: str) -> list[tuple[str, str]]:
     appdv004 = report.get("appdv004_evidence") or {}
     appdv004 = report.get("appdv004_evidence") or {}
     devdv001 = report.get("sign_in_log_evidence") or {} if str(report.get("scenario_id") or "").upper() == "DEV-DV-001" else {}
-    devdv004 = report.get("evidence") or {} if str(report.get("scenario_id") or "").upper() == "DEV-DV-004" else {}
+    devdv004 = report.get("evidence") or {} if _device_report_kind(report) == "sandbox_registration" else {}
     evidence = report.get("evidence") or {}
     evidence_dict = evidence if isinstance(evidence, dict) else {}
     local = evidence_dict.get("local") or {}
@@ -590,12 +607,12 @@ def _recommendations(report: dict[str, Any], verdict: str) -> list[str]:
             "Rerun after a few minutes.",
         ]
     if verdict == "PASS":
-        if sid == "DEV-DV-004":
+        if _device_report_kind(report) == "sandbox_registration":
             return [
                 "Keep device registration restrictions enabled.",
                 "Continue monitoring device registration audit events.",
                 "Review allowed users/groups for device registration.",
-                "Periodically rerun DEV-DV-004.",
+                "Periodically rerun DEV-DV-002.",
             ]
         if sid == "DEV-DV-001":
             return [
@@ -618,7 +635,7 @@ def _recommendations(report: dict[str, Any], verdict: str) -> list[str]:
             "Keep cleanup and evidence collection procedures documented.",
         ]
     if verdict == "PARTIAL":
-        if sid == "DEV-DV-004":
+        if _device_report_kind(report) == "sandbox_registration":
             return [
                 "Increase the monitoring window.",
                 "Check Entra Audit Logs manually.",
@@ -658,7 +675,7 @@ def _recommendations(report: dict[str, Any], verdict: str) -> list[str]:
             "Check whether the policy exists and is enabled.",
             "Review manual portal evidence.",
         ]
-    if sid == "DEV-DV-004":
+    if _device_report_kind(report) == "sandbox_registration":
         return [
             "Restrict normal users from registering or joining devices.",
             "Review Entra device settings: Users may register devices and Users may join devices.",
@@ -675,7 +692,7 @@ def _recommendations(report: dict[str, Any], verdict: str) -> list[str]:
             "Consider governance actions only after alert-only validation works.",
             "Rerun the scenario with a longer monitoring window.",
         ]
-    if sid == "DEV-DV-006" or "eicar" in name:
+    if _device_report_kind(report) == "eicar":
         return [
             "Check Microsoft Defender Antivirus status.",
             "Confirm the device is onboarded to Defender for Endpoint.",
@@ -718,7 +735,7 @@ def _evidence_rows(report: dict[str, Any]) -> list[dict[str, str]]:
     app = report.get("app_registration_creation_evidence") or {}
     appdv004 = report.get("appdv004_evidence") or {}
     devdv001 = report.get("sign_in_log_evidence") or {} if str(report.get("scenario_id") or "").upper() == "DEV-DV-001" else {}
-    devdv004 = report.get("evidence") or {} if str(report.get("scenario_id") or "").upper() == "DEV-DV-004" else {}
+    devdv004 = report.get("evidence") or {} if _device_report_kind(report) == "sandbox_registration" else {}
     evidence = report.get("evidence") or {}
     local = evidence.get("local") or {}
     tenant = (evidence.get("tenant") or {}).get("api") or {}
@@ -922,7 +939,7 @@ def _scrub(data: Any) -> Any:
 
 def _write_devdv004_html_report(report: dict[str, Any], html_path: Path, stdout: str = "") -> Path:
     html_path.parent.mkdir(parents=True, exist_ok=True)
-    scenario_id = _first(report.get("display_id"), report.get("scenario_id"), default="DEV-DV-004")
+    scenario_id = _first(report.get("display_id"), report.get("scenario_id"), default="DEV-DV-002")
     scenario_name = _first(report.get("scenario_name"), default="Sandbox Device Registration Abuse Probe")
     verdict = normalize_verdict(report.get("status"), report.get("verdict"))
     tone = _tone(verdict)
@@ -1237,7 +1254,7 @@ def write_standard_html_report(report: dict[str, Any], html_path: Path, stdout: 
     html_path.parent.mkdir(parents=True, exist_ok=True)
     scenario_id = _first(report.get("display_id"), report.get("scenario_id"), default="Unknown scenario")
     scenario_name = _first(report.get("scenario_name"), default="Unknown scenario")
-    if str(scenario_id).upper() == "DEV-DV-004":
+    if _device_report_kind(report) == "sandbox_registration":
         return _write_devdv004_html_report(report, html_path, stdout=stdout)
     if str(scenario_id).upper() in {"ID-DV-002", "ID-C-002"}:
         return _write_idc002_html_report(report, html_path, stdout=stdout)
@@ -1270,7 +1287,7 @@ def write_standard_html_report(report: dict[str, Any], html_path: Path, stdout: 
             ("Target app", _first((report.get("target") or {}).get("name"), report.get("target_app"), default="Not recorded")),
             ("Validation start UTC", _first(report.get("validation_start_utc"), (report.get("sign_in_log_evidence") or {}).get("validation_window_start_utc"), default="Not recorded")),
         ]
-    if str(report.get("scenario_id") or "").upper() == "DEV-DV-004":
+    if _device_report_kind(report) == "sandbox_registration":
         header_cards[5:6] = [
             ("Decoy user", _first((report.get("decoy_user") or {}).get("user_principal_name"), default="Not recorded")),
             ("Final device state", _first((report.get("final_device_state") or {}).get("state"), (report.get("metrics") or {}).get("final_device_state"), default="Unknown")),

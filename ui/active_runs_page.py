@@ -10,11 +10,17 @@ import streamlit as st
 
 from background_jobs import SCENARIOS as BACKGROUND_SCENARIOS, is_live, start_scenario_job
 from ca_summary import summarize_ca_access_report, summarize_mfa_report
-from run_state import ACTIVE_STATUSES, is_stale, list_runs, remove_run, request_cancel, scenario_nav_key, scenario_route, update_run
+from run_state import ACTIVE_STATUSES, canonical_device_scenario_id, is_stale, list_runs, remove_run, request_cancel, scenario_nav_key, scenario_route, update_run
 
 
 FAILED_STATUSES = {"error", "cancelled", "stale", "timeout"}
 CLD_SHAREPOINT_IDS = {"APP-DV-008", "CLD-DV-001", "CLD-C-001"}
+DEVICE_PUBLIC_NAMES = {
+    "DEV-DV-001": "Unmanaged Device Cloud Access Probe",
+    "DEV-DV-002": "Sandbox Device Registration Abuse Probe",
+    "DEV-DV-003": "Defender EICAR Detection Validation",
+    "DEV-DV-004": "Hybrid Tamper Protection Validation",
+}
 
 
 def _safe(value: object) -> str:
@@ -459,6 +465,18 @@ def _enrich_run(project_root: Path, run: dict) -> dict:
     scenario_id = str(enriched.get("scenario_id") or "").upper()
     if evidence_items:
         enriched["evidence_items_count"] = len(evidence_items)
+    public_scenario_id = canonical_device_scenario_id(
+        enriched.get("scenario_id"),
+        _first_value(enriched.get("scenario_name"), report.get("scenario_name")),
+    )
+    original_scenario_id = str(enriched.get("scenario_id") or "").upper()
+    if public_scenario_id in DEVICE_PUBLIC_NAMES:
+        if original_scenario_id and original_scenario_id != public_scenario_id:
+            enriched["runtime_scenario_id"] = original_scenario_id
+        enriched["scenario_id"] = public_scenario_id
+        enriched["display_id"] = public_scenario_id
+        enriched["scenario_name"] = DEVICE_PUBLIC_NAMES[public_scenario_id]
+    scenario_id = str(enriched.get("scenario_id") or "").upper()
 
     if str(enriched.get("status") or "").lower() == "completed" and enriched.get("verdict"):
         enriched["progress_percent"] = 100
@@ -475,7 +493,7 @@ def _enrich_run(project_root: Path, run: dict) -> dict:
                 enriched["tenant_evidence_status"] = "Evidence items available"
             else:
                 enriched["tenant_evidence_status"] = _first_value(tenant_api.get("mde_cloud_query_status"), "Not recorded")
-        if scenario_id == "DEV-DV-008":
+        if scenario_id == "DEV-DV-004":
             if not enriched.get("local_result"):
                 settings_weakened = bool(local.get("settings_weakened"))
                 protected = bool(local.get("defender_settings_remained_protected") or local.get("tamper_attempt_blocked_or_ignored")) and not settings_weakened
@@ -487,7 +505,7 @@ def _enrich_run(project_root: Path, run: dict) -> dict:
                 enriched["tamper_protection"] = "Enabled" if local.get("tamper_protection_enabled") else "Disabled or not returned"
             if not enriched.get("settings_weakened") and "settings_weakened" in local:
                 enriched["settings_weakened"] = "Yes" if local.get("settings_weakened") else "No"
-        elif scenario_id == "DEV-DV-006" and not enriched.get("local_eicar_detection"):
+        elif scenario_id == "DEV-DV-003" and not enriched.get("local_eicar_detection"):
             enriched["local_eicar_detection"] = "Found" if local.get("local_detection_found") or local.get("defender_blocking_error_found") or local.get("file_removed_or_quarantined") else "Not recorded"
         elif scenario_id in {"ID-DV-001", "ID-C-001"}:
             mfa = summarize_mfa_report(report)
@@ -633,7 +651,7 @@ def _enrich_run(project_root: Path, run: dict) -> dict:
                 enriched["poll_attempts"] = metrics.get("poll_attempts") or evidence.get("poll_count")
             if not enriched.get("max_poll_attempts"):
                 enriched["max_poll_attempts"] = metrics.get("max_poll_attempts") or evidence.get("max_poll_attempts")
-        elif scenario_id == "DEV-DV-004":
+        elif scenario_id == "DEV-DV-002":
             metrics = _as_dict(report.get("metrics"))
             found = _as_dict(report.get("what_ztvp_found"))
             timer = _as_dict(report.get("timer"))
@@ -710,7 +728,7 @@ def _run_metric_tiles(run: dict, scenario_id: str, status: str) -> str:
         _metric_tile("Evidence items", run.get("evidence_items_count")),
         _metric_tile("Local evidence", run.get("local_evidence_status")),
     ]
-    if scenario_id == "DEV-DV-004":
+    if scenario_id == "DEV-DV-002":
         tiles.extend(
             [
                 _metric_tile("Elapsed", _fmt_seconds(run.get("elapsed_seconds"))),
@@ -726,7 +744,7 @@ def _run_metric_tiles(run: dict, scenario_id: str, status: str) -> str:
                 _metric_tile("Audit lifecycle events", run.get("audit_event_count") or run.get("audit_events_found")),
             ]
         )
-    elif scenario_id == "DEV-DV-008":
+    elif scenario_id == "DEV-DV-004":
         tiles.extend(
             [
                 _metric_tile("Local result", run.get("local_result")),
@@ -734,7 +752,7 @@ def _run_metric_tiles(run: dict, scenario_id: str, status: str) -> str:
                 _metric_tile("Settings weakened", run.get("settings_weakened")),
             ]
         )
-    elif scenario_id == "DEV-DV-006":
+    elif scenario_id == "DEV-DV-003":
         tiles.append(_metric_tile("Local EICAR detection", run.get("local_eicar_detection") or run.get("local_evidence_status")))
     elif scenario_id in {"ID-DV-001", "ID-C-001"}:
         tiles.append(_metric_tile("MFA required", run.get("mfa_required")))

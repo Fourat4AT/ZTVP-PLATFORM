@@ -350,7 +350,7 @@ def _bullet_card(title: str, items: list[str]) -> None:
 
 def _render_defender_xdr_connect_command(tenant_id: str, client_id: str) -> None:
     with st.expander("Advanced troubleshooting - PowerShell token helper", expanded=False):
-        st.caption("Optional fallback only. The normal DEV-DV-006 connection uses Python MSAL directly from Streamlit.")
+        st.caption("Optional fallback only. The normal DEV-DV-003 connection uses Python MSAL directly from Streamlit.")
         st.code(_defender_xdr_connect_command(tenant_id, client_id), language="powershell")
         st.caption("Manual cache command for hosts where the PowerShell helper cannot import MSAL.PS.")
         st.code(_manual_msal_token_cache_command(tenant_id, client_id), language="powershell")
@@ -412,7 +412,7 @@ def _render_manual_tenant_evidence_form(path: Path, scenario_dir: Path) -> None:
         evidence_notes = st.text_area(
             "Evidence notes",
             value=str(existing_manual.get("evidence_notes", "")),
-            placeholder="Alert appeared in Defender portal after running DEV-DV-006.",
+            placeholder="Alert appeared in Defender portal after running DEV-DV-003.",
             key="devdv006_manual_notes",
         )
 
@@ -542,7 +542,7 @@ def _render_report(
         result_message = "Defender reacted locally, but tenant-side evidence could not be queried because Defender XDR API connection is missing or unauthorized."
         clean_conclusion = "PARTIAL - Defender reacted locally, but tenant-side API validation could not be completed."
         recommendations = [
-            "Connect Defender XDR API from DEV-DV-006.",
+            "Connect Defender XDR API from DEV-DV-003.",
             "Sign in and consent to AdvancedHunting.Read.",
             "Rerun Step 4 after connection is ready.",
             "Confirm the token cache is valid.",
@@ -780,7 +780,7 @@ def _render_report(
         st.download_button(
             "Download JSON Report",
             report_path.read_bytes(),
-            "DEV-DV-006-result.json",
+            "DEV-DV-003-result.json",
             "application/json",
             use_container_width=True,
             key=f"{key_prefix}_json_download",
@@ -790,7 +790,7 @@ def _render_report(
             st.download_button(
                 "Download HTML Report",
                 html_path.read_bytes(),
-                "DEV-DV-006-result.html",
+                "DEV-DV-003-result.html",
                 "text/html",
                 use_container_width=True,
                 key=f"{key_prefix}_html_download",
@@ -819,7 +819,7 @@ def render_devdv006_runner(project_root: Path) -> None:
     st.markdown(
         """
 <div class="ztvp-hero">
-  <h2>DEV-DV-006 — Defender EICAR Detection Validation</h2>
+  <h2>DEV-DV-003 — Defender EICAR Detection Validation</h2>
   <p>ZTVP validates whether Defender reacts to a harmless EICAR test file by generating a controlled VM-side action, collecting endpoint evidence, querying tenant-side Defender evidence, and producing a PASS/FAIL/PARTIAL verdict.</p>
 </div>
 """,
@@ -870,7 +870,7 @@ def render_devdv006_runner(project_root: Path) -> None:
         _alert("Tenant ID not found. Run ZTVP tenant connection/preflight discovery first.", "warn")
     col1, col2 = st.columns(2)
     with col1:
-        test_folder = st.text_input("Default test folder", value=existing_state.get("test_folder", r"C:\Users\Public\ZTVP-DEV-DV-006"), key="devdv006_test_folder")
+        test_folder = st.text_input("Default test folder", value=existing_state.get("test_folder", r"C:\Users\Public\ZTVP-DEV-DV-003"), key="devdv006_test_folder")
         test_device_name = st.text_input(
             "Test device name in Defender portal",
             value=existing_state.get("test_device_name", ""),
@@ -880,7 +880,7 @@ def render_devdv006_runner(project_root: Path) -> None:
         )
         st.caption("Use the device name exactly as it appears in Microsoft Defender portal → Assets → Devices.")
     with col2:
-        test_file = st.text_input("Default test file", value=existing_state.get("test_file", r"C:\Users\Public\ZTVP-DEV-DV-006\eicar.com.txt"), key="devdv006_test_file")
+        test_file = st.text_input("Default test file", value=existing_state.get("test_file", r"C:\Users\Public\ZTVP-DEV-DV-003\eicar.com.txt"), key="devdv006_test_file")
         modes = ["Tenant + Local Evidence", "Local Evidence Only"]
         existing_mode = existing_state.get("cloud_evidence_mode", "Tenant + Local Evidence")
         cloud_evidence_mode = st.selectbox(
@@ -891,7 +891,7 @@ def render_devdv006_runner(project_root: Path) -> None:
         )
 
     if st.button("Step 1 - Arm Validation Window", type="primary", use_container_width=True, key="devdv006_prepare_button"):
-        with st.spinner("Preparing DEV-DV-006 validation window and VM script template..."):
+        with st.spinner("Preparing DEV-DV-003 validation window and VM script template..."):
             completed = _run_powershell(
                 project_root,
                 prepare_script,
@@ -907,7 +907,7 @@ def render_devdv006_runner(project_root: Path) -> None:
             )
 
         if completed.returncode != 0:
-            _alert("DEV-DV-006 preparation failed.", "bad")
+            _alert("DEV-DV-003 preparation failed.", "bad")
             st.code(f"Return code: {completed.returncode}\n\n--- STDERR ---\n{completed.stderr or ''}\n\n--- STDOUT ---\n{completed.stdout or ''}", language="text")
             return
 
@@ -935,7 +935,7 @@ def render_devdv006_runner(project_root: Path) -> None:
         if not state.get("local_evidence_imported"):
             _alert("Validation window armed. Controlled action has not been executed yet.", "warn")
     else:
-        _alert("No active DEV-DV-006 validation window exists yet.", "warn")
+        _alert("No active DEV-DV-003 validation window exists yet.", "warn")
 
     st.markdown("### Step 2 — Generate Controlled EICAR Action")
     st.caption("ZTVP generates the exact PowerShell action to run inside the controlled VM.")
@@ -975,7 +975,7 @@ def render_devdv006_runner(project_root: Path) -> None:
             _alert(f"Invalid JSON evidence: {exc}", "bad")
         else:
             if parsed.get("scenario_id") != "DEV-DV-006":
-                _alert("Imported evidence is not for DEV-DV-006 and was not saved.", "bad")
+                _alert("Imported evidence is not for DEV-DV-003 and was not saved.", "bad")
                 return
             scenario_dir.mkdir(parents=True, exist_ok=True)
             local_evidence_path.write_text(json.dumps(parsed, indent=2), encoding="utf-8")
@@ -1066,12 +1066,12 @@ def render_devdv006_runner(project_root: Path) -> None:
 
     requested_run_id = str(st.session_state.get("ztvp_dynamic_open_run_id") or "")
     current_run = (
-        get_active_run(project_root, "DEV-DV-006", requested_run_id)
-        or selected_run_for_scenario(project_root, "DEV-DV-006", requested_run_id)
-        or latest_run_for_scenario(project_root, "DEV-DV-006")
+        get_active_run(project_root, "DEV-DV-003", requested_run_id)
+        or selected_run_for_scenario(project_root, "DEV-DV-003", requested_run_id)
+        or latest_run_for_scenario(project_root, "DEV-DV-003")
     )
     if current_run:
-        _render_active_run_summary(current_run, "DEV-DV-006")
+        _render_active_run_summary(current_run, "DEV-DV-003")
         if st.button("Open Active Runs", use_container_width=True, key="devdv006_open_active_runs"):
             _open_active_runs()
 
@@ -1080,7 +1080,7 @@ def render_devdv006_runner(project_root: Path) -> None:
         if not state.get("local_evidence_imported"):
             _alert("Cannot produce PASS/FAIL yet. No fresh test evidence exists for this run.", "warn")
         else:
-            run = start_scenario_job(project_root, "DEV-DV-006", int(wait_minutes), int(poll_seconds))
+            run = start_scenario_job(project_root, "DEV-DV-003", int(wait_minutes), int(poll_seconds))
             if str(run.get("status") or "").lower() in {"queued", "running", "polling"} and int(run.get("poll_attempts") or 0) > 0:
                 _alert("An existing scenario run is already active. ZTVP will keep polling in the background and update Active Runs.", "info")
             else:
@@ -1094,7 +1094,7 @@ def render_devdv006_runner(project_root: Path) -> None:
         current_run_id = str(existing_state.get("run_id") or "")
         report_run_id = str(latest_report.get("run_id") or "")
         if current_run_id and report_run_id != current_run_id:
-            st.markdown("### Previous DEV-DV-006 report")
+            st.markdown("### Previous DEV-DV-003 report")
             previous_label = report_run_id or "an older run without a run_id"
             _alert(f"Previous report is from {previous_label}. Current armed run is {current_run_id}, so the old result is not used for this validation window.", "warn")
             with st.expander("Show previous report", expanded=False):
@@ -1107,7 +1107,7 @@ def render_devdv006_runner(project_root: Path) -> None:
                     client_id=tenant_ctx["client_id"],
                 )
         else:
-            st.markdown("### Latest DEV-DV-006 report")
+            st.markdown("### Latest DEV-DV-003 report")
             _render_report(
                 latest_report,
                 report_path,
@@ -1123,15 +1123,15 @@ def render_devdv006_runner(project_root: Path) -> None:
                 _render_manual_tenant_evidence_form(manual_tenant_evidence_path, scenario_dir)
 
     st.markdown("### Step 5 — Cleanup")
-    if st.button("Step 5 - Cleanup DEV-DV-006 Temporary Files", use_container_width=True, key="devdv006_cleanup_button"):
-        with st.spinner("Cleaning DEV-DV-006 temporary files..."):
+    if st.button("Step 5 - Cleanup DEV-DV-003 Temporary Files", use_container_width=True, key="devdv006_cleanup_button"):
+        with st.spinner("Cleaning DEV-DV-003 temporary files..."):
             completed = _run_powershell(project_root, cleanup_script, [], timeout=300)
 
         if completed.returncode != 0:
-            _alert("DEV-DV-006 cleanup failed.", "bad")
+            _alert("DEV-DV-003 cleanup failed.", "bad")
             st.code(f"Return code: {completed.returncode}\n\n--- STDERR ---\n{completed.stderr or ''}\n\n--- STDOUT ---\n{completed.stdout or ''}", language="text")
         else:
-            _alert("DEV-DV-006 cleanup completed.", "good")
+            _alert("DEV-DV-003 cleanup completed.", "good")
             st.code(completed.stdout or "No PowerShell output captured.", language="text")
             st.rerun()
 

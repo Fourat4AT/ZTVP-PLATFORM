@@ -24,6 +24,22 @@ REPORTS_DIR = POWERSHELL_DIR / "Reports"
 PREFLIGHT_PATH = REPORTS_DIR / "Preflight-discovery.json"
 
 
+def public_device_scenario_id(report: Dict[str, Any]) -> str:
+    scenario_id = str(report.get("display_id") or report.get("scenario_id") or "").upper()
+    scenario_name = str(report.get("scenario_name") or "").lower()
+    if "sandbox" in scenario_name and ("device registration" in scenario_name or "registration abuse" in scenario_name):
+        return "DEV-DV-002"
+    if "eicar" in scenario_name:
+        return "DEV-DV-003"
+    if "tamper" in scenario_name:
+        return "DEV-DV-004"
+    if scenario_id == "DEV-DV-006":
+        return "DEV-DV-003"
+    if scenario_id == "DEV-DV-008":
+        return "DEV-DV-004"
+    return scenario_id
+
+
 PILLAR_ORDER = [
     "Identity",
     "Devices",
@@ -2740,15 +2756,17 @@ elif page == "Reports":
             loaded_reports.append((path, report, html_path))
             devdv004_metrics = report.get("metrics") or {}
             devdv004_found = report.get("what_ztvp_found") or {}
-            is_devdv004 = str(report.get("display_id") or report.get("scenario_id") or "").upper() == "DEV-DV-004"
-            is_cld001 = str(report.get("display_id") or report.get("scenario_id") or "").upper() in {"APP-DV-008", "CLD-DV-001", "CLD-C-001"}
-            is_idc005 = str(report.get("display_id") or report.get("scenario_id") or "").upper() in {"ID-DV-005", "ID-C-005"}
+            display_scenario_id = public_device_scenario_id(report) or str(report.get("display_id") or report.get("scenario_id") or path.stem.replace("-result", ""))
+            is_devdv004 = display_scenario_id == "DEV-DV-002"
+            raw_report_id = str(report.get("display_id") or report.get("scenario_id") or "").upper()
+            is_cld001 = raw_report_id in {"APP-DV-008", "CLD-DV-001", "CLD-C-001"}
+            is_idc005 = raw_report_id in {"ID-DV-005", "ID-C-005"}
             cld_metrics = report.get("metrics") or {}
             cld_attempt = report.get("anonymous_link_attempt") or {}
             cld_site = report.get("site") or {}
             rows.append(
                 {
-                    "Scenario ID": report.get("display_id") or report.get("scenario_id") or path.stem.replace("-result", ""),
+                    "Scenario ID": display_scenario_id,
                     "Scenario name": report.get("scenario_name") or "Unknown",
                     "Verdict": report_verdict(report),
                     "Risk": report.get("risk") or "Unknown",
@@ -2784,12 +2802,12 @@ elif page == "Reports":
 
         st.markdown("### Open report")
         for index, (path, report, html_path) in enumerate(loaded_reports[:30]):
-            scenario_id = str(report.get("display_id") or report.get("scenario_id") or path.stem.replace("-result", ""))
+            scenario_id = public_device_scenario_id(report) or str(report.get("display_id") or report.get("scenario_id") or path.stem.replace("-result", ""))
             title = f"{scenario_id} - {report.get('scenario_name') or 'Scenario report'}"
             with st.container(border=True):
                 st.markdown(f"**{esc(title)}**")
                 extra = ""
-                if str(report.get("display_id") or report.get("scenario_id") or "").upper() == "DEV-DV-004":
+                if scenario_id.upper() == "DEV-DV-002":
                     metrics = report.get("metrics") or {}
                     extra = f" | Final device state: {metrics.get('final_device_state') or 'Unknown'} | Linked devices: {metrics.get('registered_devices_linked_count') if metrics.get('registered_devices_linked_count') is not None else '0'} | Audit events: {metrics.get('audit_event_count') if metrics.get('audit_event_count') is not None else '0'}"
                 if str(report.get("display_id") or report.get("scenario_id") or "").upper() in {"APP-DV-008", "CLD-DV-001", "CLD-C-001"}:

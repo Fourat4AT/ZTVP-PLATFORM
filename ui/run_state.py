@@ -18,6 +18,8 @@ SCENARIO_ROUTE_ALIASES = {
     "APP-C-003": "APP-DV-003",
     "CLD-C-001": "APP-DV-008",
     "CLD-DV-001": "APP-DV-008",
+    "DEV-DV-006": "DEV-DV-003",
+    "DEV-DV-008": "DEV-DV-004",
     "ID-C-001": "ID-DV-001",
     "ID-C-002": "ID-DV-002",
     "ID-C-003": "ID-DV-003",
@@ -28,9 +30,9 @@ SCENARIO_ROUTE_ALIASES = {
 
 SCENARIO_ROUTE_MAP = {
     "DEV-DV-001": {"pillar": "Devices", "scope": "Cloud", "scenario_id": "DEV-DV-001"},
+    "DEV-DV-002": {"pillar": "Devices", "scope": "Cloud", "scenario_id": "DEV-DV-002"},
+    "DEV-DV-003": {"pillar": "Devices", "scope": "Cloud", "scenario_id": "DEV-DV-003"},
     "DEV-DV-004": {"pillar": "Devices", "scope": "Cloud", "scenario_id": "DEV-DV-004"},
-    "DEV-DV-006": {"pillar": "Devices", "scope": "Cloud", "scenario_id": "DEV-DV-006"},
-    "DEV-DV-008": {"pillar": "Devices", "scope": "Cloud", "scenario_id": "DEV-DV-008"},
     "APP-DV-002": {"pillar": "Applications", "scope": "Cloud", "scenario_id": "APP-DV-002"},
     "APP-DV-003": {"pillar": "Applications", "scope": "Cloud", "scenario_id": "APP-DV-003"},
     "APP-DV-004": {"pillar": "Applications", "scope": "Cloud", "scenario_id": "APP-DV-004"},
@@ -49,6 +51,28 @@ SCENARIO_ROUTE_MAP = {
     "ID-DV-011": {"pillar": "Identity", "scope": "Cloud", "scenario_id": "ID-DV-011"},
     "ID-DV-012": {"pillar": "Identity", "scope": "Cloud", "scenario_id": "ID-DV-012"},
 }
+
+
+def canonical_device_scenario_id(scenario_id: object, scenario_name: object = "") -> str:
+    sid = str(scenario_id or "").upper().strip()
+    name = str(scenario_name or "").lower()
+    if "sandbox" in name and ("device registration" in name or "registration abuse" in name):
+        return "DEV-DV-002"
+    if "eicar" in name:
+        return "DEV-DV-003"
+    if "tamper" in name:
+        return "DEV-DV-004"
+    if sid == "DEV-DV-006":
+        return "DEV-DV-003"
+    if sid == "DEV-DV-008":
+        return "DEV-DV-004"
+    return SCENARIO_ROUTE_ALIASES.get(sid, sid)
+
+
+def _run_matches_scenario(run: dict[str, Any], scenario_id: str) -> bool:
+    wanted = canonical_device_scenario_id(scenario_id)
+    run_sid = canonical_device_scenario_id(run.get("scenario_id"), run.get("scenario_name"))
+    return run_sid == wanted
 
 
 def utc_now() -> str:
@@ -226,7 +250,7 @@ def list_runs(project_root: Path | str) -> list[dict[str, Any]]:
 def find_runs(project_root: Path | str, scenario_id: str | None = None, statuses: set[str] | None = None) -> list[dict[str, Any]]:
     runs = list_runs(project_root)
     if scenario_id:
-        runs = [run for run in runs if str(run.get("scenario_id") or "").upper() == scenario_id.upper()]
+        runs = [run for run in runs if _run_matches_scenario(run, scenario_id)]
     if statuses:
         runs = [run for run in runs if str(run.get("status") or "").lower() in statuses]
     return runs
@@ -240,6 +264,11 @@ def latest_run_for_scenario(project_root: Path | str, scenario_id: str) -> dict[
 def selected_run_for_scenario(project_root: Path | str, scenario_id: str, run_id: str | None = None) -> dict[str, Any] | None:
     requested = str(run_id or "").strip()
     aliases = {
+        "DEV-DV-002": {"DEV-DV-002"},
+        "DEV-DV-003": {"DEV-DV-003"},
+        "DEV-DV-004": {"DEV-DV-004"},
+        "DEV-DV-006": {"DEV-DV-003"},
+        "DEV-DV-008": {"DEV-DV-004"},
         "APP-DV-003": {"APP-DV-003", "APP-C-003"},
         "APP-C-003": {"APP-DV-003", "APP-C-003"},
         "APP-DV-002": {"APP-DV-002", "APP-C-002"},
@@ -256,10 +285,10 @@ def selected_run_for_scenario(project_root: Path | str, scenario_id: str, run_id
         "ID-DV-005": {"ID-DV-005", "ID-C-005"},
         "ID-C-005": {"ID-DV-005", "ID-C-005"},
     }
-    wanted = aliases.get(str(scenario_id or "").upper(), {str(scenario_id or "").upper()})
+    wanted = aliases.get(str(scenario_id or "").upper(), {canonical_device_scenario_id(scenario_id)})
     if requested:
         run = load_run(project_root, requested)
-        if run and str(run.get("scenario_id") or "").upper() in wanted:
+        if run and canonical_device_scenario_id(run.get("scenario_id"), run.get("scenario_name")) in wanted:
             return run
     for candidate in wanted:
         run = latest_run_for_scenario(project_root, candidate)
@@ -324,9 +353,9 @@ def scenario_nav_key(scenario_id: str) -> str:
     }.get(sid, sid)
     names = {
         "DEV-DV-001": "Unmanaged Device Cloud Access Probe",
-        "DEV-DV-004": "Sandbox Device Registration Abuse Probe",
-        "DEV-DV-006": "Defender EICAR Detection Validation",
-        "DEV-DV-008": "Hybrid Tamper Protection Validation",
+        "DEV-DV-002": "Sandbox Device Registration Abuse Probe",
+        "DEV-DV-003": "Defender EICAR Detection Validation",
+        "DEV-DV-004": "Hybrid Tamper Protection Validation",
         "APP-DV-002": "Exchange External Mail Forwarding Exposure Validation",
         "APP-DV-003": "MDCA Public File Sharing Detection Validation",
         "APP-DV-004": "Sensitive App Access From Unmanaged Device Probe",

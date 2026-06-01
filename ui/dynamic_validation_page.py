@@ -86,9 +86,9 @@ except Exception:
 
 
 BUILTINS = {
-    "DEV-DV-008": {
-        "display_id": "DEV-DV-008",
-        "scenario_id": "DEV-DV-008",
+    "DEV-DV-004": {
+        "display_id": "DEV-DV-004",
+        "scenario_id": "DEV-DV-004",
         "name": "Hybrid Tamper Protection Validation",
         "pillar": "Devices",
         "scope": "Cloud",
@@ -100,9 +100,9 @@ BUILTINS = {
         "evidence": "Fresh VM evidence, Defender status/preferences before and after, tamper attempt results, Defender XDR Advanced Hunting evidence, JSON and HTML report.",
         "expected": "Tamper Protection is enabled, protected Defender settings remain enabled, and Defender XDR captures tenant-side evidence for the validation window.",
     },
-    "DEV-DV-006": {
-        "display_id": "DEV-DV-006",
-        "scenario_id": "DEV-DV-006",
+    "DEV-DV-003": {
+        "display_id": "DEV-DV-003",
+        "scenario_id": "DEV-DV-003",
         "name": "Defender EICAR Detection Validation",
         "pillar": "Devices",
         "scope": "Cloud",
@@ -114,9 +114,9 @@ BUILTINS = {
         "evidence": "Local VM evidence, Get-MpComputerStatus, Get-MpThreatDetection, Get-MpThreat where available, JSON and HTML report.",
         "expected": "Defender detects, blocks, quarantines, or removes the EICAR test file during the validation window.",
     },
-    "DEV-DV-004": {
-        "display_id": "DEV-DV-004",
-        "scenario_id": "DEV-DV-004",
+    "DEV-DV-002": {
+        "display_id": "DEV-DV-002",
+        "scenario_id": "DEV-DV-002",
         "name": "Sandbox Device Registration Abuse Probe",
         "pillar": "Devices",
         "scope": "Cloud",
@@ -285,9 +285,11 @@ BUILTINS = {
 }
 
 ALIASES = {
-    "DEV-DV-008": "DEV-DV-008",
-    "DEV-DV-006": "DEV-DV-006",
+    "DEV-DV-008": "DEV-DV-004",
+    "DEV-DV-006": "DEV-DV-003",
     "DEV-DV-004": "DEV-DV-004",
+    "DEV-DV-003": "DEV-DV-003",
+    "DEV-DV-002": "DEV-DV-002",
     "DEV-DV-001": "DEV-DV-001",
     "APP-DV-007": "APP-DV-007",
     "APP-DV-003": "APP-C-003",
@@ -350,12 +352,23 @@ def _ids(scenario: dict) -> set[str]:
 
 def _builtin_key(scenario: dict) -> str | None:
     ids = _ids(scenario)
+    name = _first(scenario, ["name", "Name", "title", "Title"], "").lower()
+
+    if "unmanaged device cloud access" in name:
+        return "DEV-DV-001"
+
+    if "sandbox" in name and ("device registration" in name or "registration abuse" in name):
+        return "DEV-DV-002"
+
+    if "eicar" in name or ("defender" in name and "detection" in name):
+        return "DEV-DV-003"
+
+    if "tamper" in name:
+        return "DEV-DV-004"
 
     for candidate in ids:
         if candidate in ALIASES:
             return ALIASES[candidate]
-
-    name = _first(scenario, ["name", "Name", "title", "Title"], "").lower()
 
     if "privileged access mfa" in name or "privileged mfa" in name:
         return "ID-C-001"
@@ -386,12 +399,6 @@ def _builtin_key(scenario: dict) -> str | None:
 
     if "sensitive app access" in name or ("unmanaged" in name and "sensitive" in name):
         return "APP-DV-004"
-
-    if "tamper" in name and "defender" in name:
-        return "DEV-DV-008"
-
-    if "eicar" in name or ("defender" in name and "detection" in name):
-        return "DEV-DV-006"
 
     return None
 
@@ -954,7 +961,7 @@ def _render_scenario_detail_card(scenario: dict) -> None:
 
 
 def _is_devdv004(scenario: dict) -> bool:
-    return _builtin_key(scenario) == "DEV-DV-004"
+    return _builtin_key(scenario) == "DEV-DV-002"
 
 
 def _is_devdv001(scenario: dict) -> bool:
@@ -962,11 +969,11 @@ def _is_devdv001(scenario: dict) -> bool:
 
 
 def _is_devdv006(scenario: dict) -> bool:
-    return _builtin_key(scenario) == "DEV-DV-006"
+    return _builtin_key(scenario) == "DEV-DV-003"
 
 
 def _is_devdv008(scenario: dict) -> bool:
-    return _builtin_key(scenario) == "DEV-DV-008"
+    return _builtin_key(scenario) == "DEV-DV-004"
 
 
 def _go_home() -> None:
@@ -1122,7 +1129,7 @@ def render_dynamic_validation_page(
 
         elif _is_devdv004(locals().get("open_scenario", locals().get("selected", {}))):
             if render_devdv004_runner is None:
-                st.error("DEV-DV-004 runner could not be loaded. Check ui/dynamic_devdv004.py.")
+                st.error("DEV-DV-002 runner could not be loaded. Check ui/dynamic_devdv004.py.")
             else:
                 render_devdv004_runner(project_root)
 
@@ -1134,13 +1141,13 @@ def render_dynamic_validation_page(
 
         elif _is_devdv006(locals().get("open_scenario", locals().get("selected", {}))):
             if render_devdv006_runner is None:
-                st.error("DEV-DV-006 runner could not be loaded. Check ui/dynamic_devdv006.py.")
+                st.error("DEV-DV-003 runner could not be loaded. Check ui/dynamic_devdv006.py.")
             else:
                 render_devdv006_runner(project_root)
 
         elif _is_devdv008(locals().get("open_scenario", locals().get("selected", {}))):
             if render_devdv008_runner is None:
-                st.error("DEV-DV-008 runner could not be loaded. Check ui/dynamic_devdv008.py.")
+                st.error("DEV-DV-004 runner could not be loaded. Check ui/dynamic_devdv008.py.")
             else:
                 render_devdv008_runner(project_root)
 

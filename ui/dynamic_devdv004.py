@@ -158,7 +158,7 @@ def _polls_label(run_or_report: dict) -> str:
 
 
 def _render_active_run(project_root: Path, run: dict) -> None:
-    _alert("DEV-DV-004 validation is currently running.", "info")
+    _alert("DEV-DV-002 validation is currently running.", "info")
     st.markdown(
         f"""
 <div class="ztvp-grid">
@@ -183,7 +183,7 @@ def _render_active_run(project_root: Path, run: dict) -> None:
             st.session_state["pending_navigation"] = {"main_navigation": "Active Runs"}
             st.rerun()
     with col2:
-        if st.button("Cancel DEV-DV-004 run", use_container_width=True, key="devdv004_cancel_run"):
+        if st.button("Cancel DEV-DV-002 run", use_container_width=True, key="devdv004_cancel_run"):
             request_cancel(project_root, str(run.get("run_id") or ""))
             st.rerun()
     import time
@@ -195,7 +195,7 @@ def _render_completed_run_output(project_root: Path, run: dict) -> bool:
     report_path = _safe_existing_path(project_root, run.get("report_path"))
     html_path = _safe_existing_path(project_root, run.get("html_report_path"))
     if report_path is None:
-        _alert("DEV-DV-004 completed, but the JSON report file is not available.", "warn")
+        _alert("DEV-DV-002 completed, but the JSON report file is not available.", "warn")
         return False
     report = _load_json(report_path)
     if html_path is None:
@@ -215,7 +215,7 @@ def _render_report(report: dict, report_path: Path, html_path: Path, key_prefix:
     timer = report.get("timer", {}) or {}
     final_state = report.get("final_device_state", {}) or {}
 
-    _alert("DEV-DV-004 report loaded.", _tone(status))
+    _alert("DEV-DV-002 report loaded.", _tone(status))
 
     st.markdown(
         f"""
@@ -292,7 +292,7 @@ def _render_report(report: dict, report_path: Path, html_path: Path, key_prefix:
         {"Evidence": "Final Graph registeredDevices count", "Value": evidence.get("final_graph_registered_devices_count", 0), "Meaning": "Raw final registeredDevices result before /devices existence verification."},
         {"Evidence": "Device lifecycle audit events", "Value": evidence.get("registration_like_audit_count_after_window", 0), "Meaning": "Add/Register/Owner/User/Unregister/Delete lifecycle events in the validation window."},
         {"Evidence": "Exact decoy audit matches", "Value": evidence.get("exact_decoy_registration_like_audit_count_after_window", 0), "Meaning": "Lifecycle rows where the decoy UPN or object ID is directly present in Graph audit fields."},
-        {"Evidence": "Supporting sign-ins", "Value": evidence.get("sign_in_count_after_window", 0), "Meaning": "Optional context only. Conditional Access is not the main evidence for DEV-DV-004."},
+        {"Evidence": "Supporting sign-ins", "Value": evidence.get("sign_in_count_after_window", 0), "Meaning": "Optional context only. Conditional Access is not the main evidence for DEV-DV-002."},
         {"Evidence": "Stop reason", "Value": timer.get("stop_reason") or metrics.get("stop_reason") or "", "Meaning": "Why polling stopped."},
     ]
 
@@ -402,13 +402,13 @@ ZTVP found some evidence, but the result could not be fully classified.
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        st.download_button("View HTML report", html_path.read_bytes(), "DEV-DV-004-result.html", "text/html", use_container_width=True, key=f"{key_prefix}_view_html")
+        st.download_button("View HTML report", html_path.read_bytes(), "DEV-DV-002-result.html", "text/html", use_container_width=True, key=f"{key_prefix}_view_html")
 
     with col2:
-        st.download_button("Download HTML Report", html_path.read_bytes(), "DEV-DV-004-result.html", "text/html", use_container_width=True, key=f"{key_prefix}_html")
+        st.download_button("Download HTML Report", html_path.read_bytes(), "DEV-DV-002-result.html", "text/html", use_container_width=True, key=f"{key_prefix}_html")
 
     with col3:
-        st.download_button("Download JSON evidence", report_path.read_bytes(), "DEV-DV-004-result.json", "application/json", use_container_width=True, key=f"{key_prefix}_json")
+        st.download_button("Download JSON evidence", report_path.read_bytes(), "DEV-DV-002-result.json", "application/json", use_container_width=True, key=f"{key_prefix}_json")
 
 
 def render_devdv004_runner(project_root: Path) -> None:
@@ -429,7 +429,7 @@ def render_devdv004_runner(project_root: Path) -> None:
     st.markdown(
         """
 <div class="ztvp-hero">
-  <h2>DEV-DV-004 — Sandbox Device Registration Abuse Probe</h2>
+  <h2>DEV-DV-002 — Sandbox Device Registration Abuse Probe</h2>
   <p>Create a decoy user, manually use Windows Sandbox for Access work or school registration, then wait for Entra evidence.</p>
 </div>
 """,
@@ -439,13 +439,13 @@ def render_devdv004_runner(project_root: Path) -> None:
     _alert("This is the real normal-user device registration validation from the Devices → Cloud catalog. Windows Sandbox must be enabled on the host.", "info")
 
     requested_run_id = str(st.session_state.get("ztvp_dynamic_open_run_id") or "")
-    selected_run = selected_run_for_scenario(project_root, "DEV-DV-004", requested_run_id)
-    active_run = get_active_run(project_root, "DEV-DV-004", requested_run_id) if requested_run_id else get_active_run(project_root, "DEV-DV-004")
+    selected_run = selected_run_for_scenario(project_root, "DEV-DV-002", requested_run_id)
+    active_run = get_active_run(project_root, "DEV-DV-002", requested_run_id) if requested_run_id else get_active_run(project_root, "DEV-DV-002")
     if active_run:
         _render_active_run(project_root, active_run)
         return
 
-    latest_run = selected_run or latest_run_for_scenario(project_root, "DEV-DV-004")
+    latest_run = selected_run or latest_run_for_scenario(project_root, "DEV-DV-002")
     if latest_run and str(latest_run.get("status") or "").lower() in ACTIVE_STATUSES and is_stale(latest_run):
         update_run(
             project_root,
@@ -454,9 +454,9 @@ def render_devdv004_runner(project_root: Path) -> None:
             phase="Interrupted",
             current_message="Run was interrupted because the app process stopped.",
         )
-        latest_run = selected_run_for_scenario(project_root, "DEV-DV-004", requested_run_id) or latest_run_for_scenario(project_root, "DEV-DV-004")
+        latest_run = selected_run_for_scenario(project_root, "DEV-DV-002", requested_run_id) or latest_run_for_scenario(project_root, "DEV-DV-002")
     if latest_run and str(latest_run.get("status") or "").lower() == "stale":
-        _alert("DEV-DV-004 run was interrupted because the app process stopped. You can restart analysis with a fresh run.", "warn")
+        _alert("DEV-DV-002 run was interrupted because the app process stopped. You can restart analysis with a fresh run.", "warn")
     elif latest_run and str(latest_run.get("status") or "").lower() in {"completed", "cancelled", "error", "timeout"}:
         _render_completed_run_output(project_root, latest_run)
 
@@ -466,16 +466,16 @@ def render_devdv004_runner(project_root: Path) -> None:
         col1, col2 = st.columns(2)
         with col1:
             user_prefix = st.text_input("Decoy username prefix", value="ztvp-devdv004-decoy", key="devdv004_user_prefix")
-            display_name = st.text_input("Decoy display name", value="ZTVP DEV-DV-004 Sandbox Device Registration Decoy User", key="devdv004_display_name")
+            display_name = st.text_input("Decoy display name", value="ZTVP DEV-DV-002 Sandbox Device Registration Decoy User", key="devdv004_display_name")
         with col2:
             tenant_domain = st.text_input("Tenant domain optional", value="", placeholder="Leave empty to auto-detect", key="devdv004_tenant_domain")
 
-        if st.button("Step 1 — Prepare DEV-DV-004 Decoy User", type="primary", use_container_width=True):
+        if st.button("Step 1 — Prepare DEV-DV-002 Decoy User", type="primary", use_container_width=True):
             args = ["-UserPrefix", user_prefix.strip(), "-DisplayName", display_name.strip()]
             if tenant_domain.strip():
                 args.extend(["-TenantDomain", tenant_domain.strip()])
 
-            with st.spinner("Creating DEV-DV-004 decoy user..."):
+            with st.spinner("Creating DEV-DV-002 decoy user..."):
                 completed = _run_powershell(project_root, prepare_script, args, timeout=1200)
 
             if completed.returncode != 0:
@@ -579,12 +579,12 @@ def render_devdv004_runner(project_root: Path) -> None:
     elif not (_load_json(state_path).get("validation_window_start_utc")):
         _alert("Start a fresh validation window before analyzing evidence.", "warn")
     elif st.button("Analyze device registration evidence", use_container_width=True, type="primary"):
-        run = start_scenario_job(project_root, "DEV-DV-004", int(wait_minutes), int(poll_seconds))
+        run = start_scenario_job(project_root, "DEV-DV-002", int(wait_minutes), int(poll_seconds))
         _render_active_run(project_root, run)
         st.stop()
 
     if report_path.exists() and not (latest_run and latest_run.get("report_path")):
-        st.markdown("### Latest DEV-DV-004 report")
+        st.markdown("### Latest DEV-DV-002 report")
         report = _load_json(report_path)
         _render_report(report, report_path, html_path, key_prefix="devdv004_latest")
 
@@ -593,7 +593,7 @@ def render_devdv004_runner(project_root: Path) -> None:
     delete_device = st.checkbox("Also delete detected test device if ZTVP found one", value=False, key="devdv004_delete_device")
 
     if not state_path.exists():
-        _alert("No active DEV-DV-004 state exists.", "good")
+        _alert("No active DEV-DV-002 state exists.", "good")
     else:
         state = _load_json(state_path)
         decoy = state.get("decoy_user", {}) or {}
@@ -610,19 +610,19 @@ def render_devdv004_runner(project_root: Path) -> None:
             unsafe_allow_html=True,
         )
 
-        if st.button("Step 4 — Cleanup DEV-DV-004 Objects", use_container_width=True):
+        if st.button("Step 4 — Cleanup DEV-DV-002 Objects", use_container_width=True):
             args = []
             if delete_device:
                 args.append("-DeleteDetectedDevice")
 
-            with st.spinner("Cleaning DEV-DV-004 objects..."):
+            with st.spinner("Cleaning DEV-DV-002 objects..."):
                 completed = _run_powershell(project_root, cleanup_script, args, timeout=1200)
 
             if completed.returncode != 0:
-                _alert("DEV-DV-004 cleanup failed.", "bad")
+                _alert("DEV-DV-002 cleanup failed.", "bad")
                 st.code(f"Return code: {completed.returncode}\n\n--- STDERR ---\n{completed.stderr or ''}\n\n--- STDOUT ---\n{completed.stdout or ''}", language="text")
             else:
-                _alert("DEV-DV-004 cleanup completed.", "good")
+                _alert("DEV-DV-002 cleanup completed.", "good")
                 st.code(completed.stdout or "No PowerShell output captured.", language="text")
                 st.rerun()
 

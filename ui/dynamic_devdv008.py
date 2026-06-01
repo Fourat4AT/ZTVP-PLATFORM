@@ -506,7 +506,7 @@ def _render_report(report: dict, report_path: Path, html_path: Path, key_prefix:
         st.download_button(
             "Download JSON Report",
             report_path.read_bytes(),
-            "DEV-DV-008-result.json",
+            "DEV-DV-004-result.json",
             "application/json",
             use_container_width=True,
             key=f"{key_prefix}_json_download",
@@ -516,7 +516,7 @@ def _render_report(report: dict, report_path: Path, html_path: Path, key_prefix:
             st.download_button(
                 "Download HTML Report",
                 html_path.read_bytes(),
-                "DEV-DV-008-result.html",
+                "DEV-DV-004-result.html",
                 "text/html",
                 use_container_width=True,
                 key=f"{key_prefix}_html_download",
@@ -544,18 +544,43 @@ def render_devdv008_runner(project_root: Path) -> None:
     st.markdown(
         """
 <div class="ztvp-hero">
-  <h2>DEV-DV-008 - Hybrid Tamper Protection Validation</h2>
+  <h2>DEV-DV-004 - Hybrid Tamper Protection Validation</h2>
   <p>ZTVP attempts controlled Defender preference changes on a test endpoint, imports endpoint evidence, and checks Microsoft Defender XDR for tenant-side tamper evidence.</p>
 </div>
 """,
         unsafe_allow_html=True,
     )
 
+    st.info(
+        "Hybrid scenario requirements\n\n"
+        "This is a hybrid endpoint + tenant validation. It requires a Windows test device or VM onboarded to Microsoft Defender for Endpoint. "
+        "ZTVP runs a local tamper attempt script on the endpoint, imports local evidence, then checks Microsoft Defender XDR for tenant-side evidence.\n\n"
+        "Requirements:\n"
+        "- Windows test VM or endpoint\n"
+        "- Microsoft Defender Antivirus running\n"
+        "- Tamper Protection enabled\n"
+        "- Device onboarded to Microsoft Defender for Endpoint\n"
+        "- Device visible in Microsoft Defender portal -> Assets -> Devices\n"
+        "- Exact Defender device name entered in Step 1\n\n"
+        "Warning:\n"
+        "If the device is not onboarded to Microsoft Defender for Endpoint, ZTVP can still collect local endpoint evidence, but tenant Defender XDR evidence will be missing. "
+        "In that case, the scenario should return PARTIAL instead of full PASS.\n\n"
+        "Full PASS requires:\n"
+        "- Tamper Protection enabled locally\n"
+        "- Defender settings not weakened\n"
+        "- Defender XDR tenant evidence found"
+    )
+
     st.markdown("### Step 1 - Arm Validation Window")
     col1, col2 = st.columns(2)
     with col1:
-        test_folder = st.text_input("Default test folder", value=existing_state.get("test_folder", r"C:\Users\Public\ZTVP-DEV-DV-008"), key="devdv008_test_folder")
-        test_device_name = st.text_input("Test device name in Defender portal", value=existing_state.get("test_device_name", ""), key="devdv008_test_device_name")
+        test_folder = st.text_input("Default test folder", value=existing_state.get("test_folder", r"C:\Users\Public\ZTVP-DEV-DV-004"), key="devdv008_test_folder")
+        test_device_name = st.text_input(
+            "Test device name in Defender portal",
+            value=existing_state.get("test_device_name", ""),
+            key="devdv008_test_device_name",
+            help="Enter the exact device name as it appears in Microsoft Defender portal. The device must be onboarded to Microsoft Defender for Endpoint for tenant evidence.",
+        )
     with col2:
         cloud_mode = st.selectbox(
             "Tenant cloud evidence mode",
@@ -576,7 +601,7 @@ def render_devdv008_runner(project_root: Path) -> None:
         )
 
     if st.button("Step 1 - Arm Validation Window", type="primary", use_container_width=True, key="devdv008_prepare_button"):
-        with st.spinner("Preparing DEV-DV-008 validation window and VM script template..."):
+        with st.spinner("Preparing DEV-DV-004 validation window and VM script template..."):
             completed = _run_powershell(
                 project_root,
                 prepare_script,
@@ -595,7 +620,7 @@ def render_devdv008_runner(project_root: Path) -> None:
                 timeout=300,
             )
         if completed.returncode != 0:
-            _alert("DEV-DV-008 preparation failed.", "bad")
+            _alert("DEV-DV-004 preparation failed.", "bad")
             st.code(f"Return code: {completed.returncode}\n\n--- STDERR ---\n{completed.stderr or ''}\n\n--- STDOUT ---\n{completed.stdout or ''}", language="text")
             return
         _alert("Validation window armed. Controlled action has not been executed yet.", "warn")
@@ -647,7 +672,7 @@ def render_devdv008_runner(project_root: Path) -> None:
                     timeout=300,
                 )
             if completed.returncode != 0:
-                _alert("DEV-DV-008 VM script generation failed.", "bad")
+                _alert("DEV-DV-004 VM script generation failed.", "bad")
                 st.code(f"Return code: {completed.returncode}\n\n--- STDERR ---\n{completed.stderr or ''}\n\n--- STDOUT ---\n{completed.stdout or ''}", language="text")
             else:
                 _alert("VM tamper attempt script generated for the current run.", "good")
@@ -673,7 +698,7 @@ def render_devdv008_runner(project_root: Path) -> None:
             _alert(f"Invalid JSON evidence: {exc}", "bad")
         else:
             if parsed.get("scenario_id") != "DEV-DV-008":
-                _alert("Imported evidence is not for DEV-DV-008 and was not saved.", "bad")
+                _alert("Imported evidence is not for DEV-DV-004 and was not saved.", "bad")
                 return
             state = _load_json(state_path) if state_path.exists() else {}
             current_run_id = str(state.get("run_id") or "")
@@ -692,7 +717,7 @@ def render_devdv008_runner(project_root: Path) -> None:
                 _alert(_evidence_debug_message(f"Evidence rejected because timestamp is {minutes_old} minutes older than current validation window tolerance.", current_run_id, evidence_run_id, window_start, evidence_time), "bad")
                 return
             if not _device_matches(state.get("test_device_name"), parsed.get("computer_name")):
-                _alert("Imported evidence device name does not match the current DEV-DV-008 test device name.", "bad")
+                _alert("Imported evidence device name does not match the current DEV-DV-004 test device name.", "bad")
                 return
             scenario_dir.mkdir(parents=True, exist_ok=True)
             local_evidence_path.write_text(json.dumps(parsed, indent=2), encoding="utf-8")
@@ -731,7 +756,7 @@ Times are shown in UTC. Local time may differ.
         )
 
     st.markdown("### Step 4 - Analyze Local + Tenant Defender Evidence")
-    _alert("Defender XDR timeline events can take a few minutes to appear. ZTVP will re-query until evidence is found or the wait window expires.", "info")
+    _alert("Tenant evidence may take several minutes to appear in Defender XDR. If local evidence is valid but tenant evidence is missing, wait and rerun this analysis step.", "info")
     col_w1, col_w2 = st.columns(2)
     with col_w1:
         wait_minutes = st.selectbox("Wait for tenant evidence", [1, 3, 5, 10, 15], index=2, format_func=lambda value: f"{value} minutes", key="devdv008_wait_minutes")
@@ -804,12 +829,12 @@ DeviceEvents
 
     requested_run_id = str(st.session_state.get("ztvp_dynamic_open_run_id") or "")
     current_run = (
-        get_active_run(project_root, "DEV-DV-008", requested_run_id)
-        or selected_run_for_scenario(project_root, "DEV-DV-008", requested_run_id)
-        or latest_run_for_scenario(project_root, "DEV-DV-008")
+        get_active_run(project_root, "DEV-DV-004", requested_run_id)
+        or selected_run_for_scenario(project_root, "DEV-DV-004", requested_run_id)
+        or latest_run_for_scenario(project_root, "DEV-DV-004")
     )
     if current_run:
-        _render_active_run_summary(current_run, "DEV-DV-008")
+        _render_active_run_summary(current_run, "DEV-DV-004")
         if st.button("Open Active Runs", use_container_width=True, key="devdv008_open_active_runs"):
             _open_active_runs()
 
@@ -821,7 +846,7 @@ DeviceEvents
             _alert("Cannot produce PASS/FAIL yet. No fresh endpoint test evidence exists for this run.", "warn")
         else:
             st.markdown(f"Tenant wait window: `{wait_minutes}` minutes  \nPoll interval: `{poll_seconds}` seconds")
-            run = start_scenario_job(project_root, "DEV-DV-008", int(wait_minutes), int(poll_seconds))
+            run = start_scenario_job(project_root, "DEV-DV-004", int(wait_minutes), int(poll_seconds))
             if str(run.get("status") or "").lower() in {"queued", "running", "polling"} and int(run.get("poll_attempts") or 0) > 0:
                 _alert("An existing scenario run is already active. ZTVP will keep polling in the background and update Active Runs.", "info")
             else:
@@ -835,23 +860,23 @@ DeviceEvents
         current_run_id = str(existing_state.get("run_id") or "")
         report_run_id = str(latest_report.get("run_id") or "")
         if current_run_id and report_run_id != current_run_id:
-            st.markdown("### Previous DEV-DV-008 report")
+            st.markdown("### Previous DEV-DV-004 report")
             previous_label = report_run_id or "an older run without a run_id"
             _alert(f"Previous report is from {previous_label}. Current armed run is {current_run_id}, so the old result is not used for this validation window.", "warn")
             with st.expander("Show previous report", expanded=False):
                 _render_report(latest_report, report_path, html_path, key_prefix="devdv008_previous")
         else:
-            st.markdown("### Latest DEV-DV-008 report")
+            st.markdown("### Latest DEV-DV-004 report")
             _render_report(latest_report, report_path, html_path, key_prefix="devdv008_latest")
 
     st.markdown("### Step 5 - Cleanup")
-    if st.button("Step 5 - Cleanup and Reset DEV-DV-008", use_container_width=True, key="devdv008_cleanup"):
-        with st.spinner("Cleaning DEV-DV-008 temporary files..."):
+    if st.button("Step 5 - Cleanup and Reset DEV-DV-004", use_container_width=True, key="devdv008_cleanup"):
+        with st.spinner("Cleaning DEV-DV-004 temporary files..."):
             completed = _run_powershell(project_root, cleanup_script, [], timeout=300)
         if completed.returncode != 0:
-            _alert("DEV-DV-008 cleanup failed.", "bad")
+            _alert("DEV-DV-004 cleanup failed.", "bad")
             st.code(f"Return code: {completed.returncode}\n\n--- STDERR ---\n{completed.stderr or ''}\n\n--- STDOUT ---\n{completed.stdout or ''}", language="text")
         else:
-            _alert("DEV-DV-008 cleanup completed. The scenario is reset and ready to start again from Step 1.", "good")
+            _alert("DEV-DV-004 cleanup completed. The scenario is reset and ready to start again from Step 1.", "good")
             st.code(completed.stdout or "No PowerShell output captured.", language="text")
             st.rerun()
