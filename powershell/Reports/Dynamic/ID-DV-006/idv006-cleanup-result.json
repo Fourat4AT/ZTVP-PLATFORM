@@ -1,0 +1,15 @@
+﻿{
+    "scenario_id":  "ID-DV-006",
+    "run_id":  "20260601-150947",
+    "decoy_user_principal_name":  "ztvp-idv006-decoy-20260601-150947-kpkz0@M365x07179530.onmicrosoft.com",
+    "cleanup_admin_account":  "habib@M365x07179530.onmicrosoft.com",
+    "cleaned_at":  "2026-06-01T15:19:09",
+    "cleanup_status":  "Completed",
+    "actions":  [
+                    "Deleted ID-DV-006 decoy user."
+                ],
+    "errors":  [
+
+               ],
+    "state_file_deleted":  true
+}

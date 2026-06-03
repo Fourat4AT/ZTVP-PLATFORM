@@ -90,6 +90,22 @@ SCENARIOS = {
         "report": Path("powershell") / "Reports" / "Dynamic" / "DEV-DV-008-result.json",
         "html": Path("powershell") / "Reports" / "Dynamic" / "DEV-DV-008-result.html",
     },
+    "APP-DV-001": {
+        "name": "Enterprise App Assignment Enforcement Probe",
+        "script": Path("powershell") / "Engines" / "DynamicValidation" / "Analyze-ZTVP-APPDV001.ps1",
+        "state": Path("powershell") / "Reports" / "Dynamic" / "APP-DV-001" / "appdv001-state.json",
+        "local_evidence": Path("powershell") / "Reports" / "Dynamic" / "APP-DV-001" / "appdv001-state.json",
+        "report": Path("powershell") / "Reports" / "Dynamic" / "APP-DV-001-result.json",
+        "html": Path("powershell") / "Reports" / "Dynamic" / "APP-DV-001-result.html",
+    },
+    "ID-DV-006": {
+        "name": "Sign-in Risk Conditional Access Validation",
+        "script": Path("powershell") / "Engines" / "DynamicValidation" / "Invoke-ZTVP-IDV006.ps1",
+        "state": Path("powershell") / "Reports" / "Dynamic" / "ID-DV-006" / "idv006-state.json",
+        "local_evidence": Path("powershell") / "Reports" / "Dynamic" / "ID-DV-006" / "idv006-state.json",
+        "report": Path("powershell") / "Reports" / "Dynamic" / "ID-DV-006-result.json",
+        "html": Path("powershell") / "Reports" / "Dynamic" / "ID-DV-006-result.html",
+    },
     "APP-DV-004": {
         "name": "Sensitive App Access From Unmanaged Device Probe",
         "script": Path("powershell") / "Engines" / "DynamicValidation" / "Analyze-ZTVP-APPDV004.ps1",
@@ -331,6 +347,21 @@ def _tenant_status(report: dict[str, Any]) -> str:
         if str(report.get("status") or "").upper().startswith("UNSUPPORTED"):
             return "Unsupported"
         return "Not found"
+    if str(report.get("scenario_id") or "").upper() == "APP-DV-001":
+        evidence = report.get("sign_in_log_evidence") or {}
+        if evidence.get("signin_found"):
+            return "Found"
+        if str(report.get("status") or "").upper().startswith("UNSUPPORTED"):
+            return "Unsupported"
+        return "Not found"
+    if str(report.get("scenario_id") or "").upper() == "ID-DV-006":
+        evidence = report.get("sign_in_risk_evidence") or {}
+        status_text = str(report.get("status") or "").upper()
+        if evidence.get("matching_sign_in_found") or status_text.startswith("FAIL_NO_SIGNIN_RISK_POLICY"):
+            return "Found"
+        if status_text.startswith("UNSUPPORTED") or status_text.startswith("ERROR"):
+            return "Unsupported"
+        return "Not found"
     if str(report.get("scenario_id") or report.get("display_id") or "").upper() in {"APP-DV-003", "APP-C-003"}:
         mdca = report.get("mdca_detection_evidence") or {}
         metrics = report.get("metrics") or {}
@@ -389,6 +420,10 @@ def _phase_for_scenario(scenario_id: str) -> str:
         return "Testing legacy protocols and collecting Entra evidence"
     if scenario_id in {"APP-DV-004", "DEV-DV-001"}:
         return "Waiting for Entra sign-in / Conditional Access evidence"
+    if scenario_id == "APP-DV-001":
+        return "Waiting for Entra sign-in assignment-enforcement evidence"
+    if scenario_id == "ID-DV-006":
+        return "Waiting for risky sign-in and Conditional Access evidence"
     if device_kind == "sandbox_registration":
         return "Checking registeredDevices and device lifecycle audit logs"
     if device_kind == "hybrid_tamper":
@@ -519,6 +554,10 @@ def _initial_message(scenario_id: str, max_attempts: int) -> str:
         return "Waiting for unmanaged-device sign-in evidence."
     if scenario_id == "APP-DV-004":
         return f"Waiting for Entra sign-in / Conditional Access evidence. Attempt 1 of {max_attempts}."
+    if scenario_id == "APP-DV-001":
+        return f"Waiting for the decoy sign-in to the controlled app to appear in Entra sign-in logs. Attempt 1 of {max_attempts}."
+    if scenario_id == "ID-DV-006":
+        return f"Checking sign-in risk Conditional Access policies and waiting for the risky decoy sign-in. Attempt 1 of {max_attempts}."
     if device_kind == "sandbox_registration":
         return "Checking registeredDevices for the DEV-DV-002 decoy user."
     if device_kind == "hybrid_tamper":
@@ -542,6 +581,10 @@ def _poll_message(scenario_id: str, attempt: int, max_attempts: int, poll_second
         return "Entra sign-in logs", f"Waiting for unmanaged-device sign-in evidence. Attempt {attempt} of {max_attempts}."
     if scenario_id == "APP-DV-004":
         return "sign-in logs + Conditional Access", f"Waiting for Entra sign-in / Conditional Access evidence. Attempt {attempt} of {max_attempts}."
+    if scenario_id == "APP-DV-001":
+        return "Entra sign-in logs", f"Polling Entra sign-in logs for the decoy's assignment-enforcement result (error 50105 vs success). Attempt {attempt} of {max_attempts}."
+    if scenario_id == "ID-DV-006":
+        return "Entra sign-in logs + Conditional Access", f"Polling Entra sign-in logs for the risky decoy sign-in and Conditional Access response. Attempt {attempt} of {max_attempts}."
     if device_kind == "sandbox_registration":
         step = (attempt - 1) % 3
         if step == 0:
@@ -826,7 +869,7 @@ def start_scenario_job(
         "retry_interval_seconds": int(poll_seconds),
         "elapsed_seconds": 0,
         "remaining_seconds": int(wait_minutes) * 60,
-        "current_evidence_source": "registeredDevices + audit logs" if device_kind == "sandbox_registration" else "Entra sign-in logs" if scenario_id in {"APP-DV-004", "DEV-DV-001"} else "tenant evidence",
+        "current_evidence_source": "registeredDevices + audit logs" if device_kind == "sandbox_registration" else "Entra sign-in logs" if scenario_id in {"APP-DV-004", "DEV-DV-001", "APP-DV-001"} else "Entra sign-in logs + Conditional Access" if scenario_id == "ID-DV-006" else "tenant evidence",
         "final_device_state": None,
         "registered_devices_linked_count": None,
         "audit_events_found": None,
@@ -1992,6 +2035,10 @@ def _run_job(project_root: Path, scenario_id: str, run_id: str, wait_minutes: in
             final_message = f"Run completed. Verdict: {verdict or 'Unknown'}."
         if scenario_id == "APP-DV-004":
             final_message = str(report.get("final_claim") or final_message)
+        if scenario_id == "APP-DV-001":
+            final_message = str(report.get("final_claim") or report.get("executive_summary") or final_message)
+        if scenario_id == "ID-DV-006":
+            final_message = str(report.get("final_claim") or report.get("executive_summary") or final_message)
         if scenario_id == "APP-DV-003":
             final_message = str(report.get("final_claim") or report.get("executive_summary") or final_message)
         if scenario_id in CLD_SHAREPOINT_IDS:

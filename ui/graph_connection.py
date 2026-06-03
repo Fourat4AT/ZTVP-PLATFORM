@@ -25,6 +25,8 @@ SCENARIO_REQUIRED_SCOPES: dict[str, list[str]] = {
     "APP-DV-003": ["Sites.ReadWrite.All", "Files.ReadWrite.All", "Directory.Read.All"],
     "APP-C-003": ["Sites.ReadWrite.All", "Files.ReadWrite.All", "Directory.Read.All"],
     "APP-DV-007": ["Application.ReadWrite.All", "Directory.Read.All"],
+    "APP-DV-001": ["Application.ReadWrite.All", "User.ReadWrite.All", "Directory.Read.All", "AuditLog.Read.All"],
+    "ID-DV-006": ["User.ReadWrite.All", "AuditLog.Read.All", "Policy.Read.All", "Directory.Read.All"],
 }
 
 GRAPH_SCENARIOS = set(SCENARIO_REQUIRED_SCOPES)

@@ -1,0 +1,17 @@
+﻿{
+    "scenario_id":  "APP-DV-001",
+    "status":  "DECOY_READY",
+    "tenant_id":  "a42bcf6e-a159-49f2-b6c8-8e856fce43e0",
+    "admin_account":  "habib@M365x07179530.onmicrosoft.com",
+    "decoy_user_principal_name":  "ztvp-appdv001-decoy-20260601-100221-jx9kr@M365x07179530.onmicrosoft.com",
+    "decoy_temporary_password":  "ZTVP!2a032611fcaf43aA9",
+    "decoy_assigned_to_app":  false,
+    "target_app_display_name":  "ZTVP-APP-DV-001-AssignmentEnforcement-App-20260601-100221",
+    "target_app_id":  "ed0ab3dc-045a-4b0f-b560-b619da3d2fbe",
+    "target_app_role_assignment_required":  true,
+    "tenant_domain":  "M365x07179530.onmicrosoft.com",
+    "password_visible_for_probe":  true,
+    "message":  "Decoy user and controlled assignment-required enterprise app created. Use this UPN and password in Step 2 when Microsoft login asks.",
+    "state_path":  "C:\\Users\\Habib Torjmen\\Desktop\\Habib Enetcom\\PFE FIFI\\internship-progress-2026\\powershell\\Reports\\Dynamic\\APP-DV-001\\appdv001-state.json",
+    "prepared_at":  "2026-06-01T10:02:26"
+}

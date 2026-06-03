@@ -1,0 +1,36 @@
+﻿{
+    "scenario_id":  "APP-DV-001",
+    "display_id":  "APP-DV-001",
+    "scenario_name":  "Enterprise App Assignment Enforcement Probe",
+    "mode":  "Three-Step Managed Decoy Enterprise App Sign-in",
+    "run_id":  "20260601-100221",
+    "prepared_at":  "2026-06-01T10:02:26",
+    "tenant_id":  "a42bcf6e-a159-49f2-b6c8-8e856fce43e0",
+    "admin_account":  "habib@M365x07179530.onmicrosoft.com",
+    "tenant_domain":  "M365x07179530.onmicrosoft.com",
+    "decoy_user":  {
+                       "id":  "de0be8e8-ef3e-4cde-8a9b-aaecca3c7d91",
+                       "user_principal_name":  "ztvp-appdv001-decoy-20260601-100221-jx9kr@M365x07179530.onmicrosoft.com",
+                       "display_name":  "ZTVP APP-DV-001 Enterprise App Assignment Decoy User",
+                       "temporary_password":  "ZTVP!2a032611fcaf43aA9",
+                       "assigned_to_app":  false,
+                       "created_by_ztvp":  true
+                   },
+    "target_app":  {
+                       "display_name":  "ZTVP-APP-DV-001-AssignmentEnforcement-App-20260601-100221",
+                       "app_id":  "ed0ab3dc-045a-4b0f-b560-b619da3d2fbe",
+                       "app_object_id":  "cda39cc4-33da-469c-a1bc-abb62dd2367c",
+                       "service_principal_id":  "95904bdc-9bb9-4be5-ac74-c7bbfa29d6b1",
+                       "app_role_assignment_required":  true,
+                       "created_by_ztvp":  true
+                   },
+    "assignment_probe":  {
+                             "attempted":  true,
+                             "access_granted":  false,
+                             "assignment_required_blocked":  true,
+                             "connected_account":  "ztvp-appdv001-decoy-20260601-100221-jx9kr@M365x07179530.onmicrosoft.com",
+                             "error_message":  "Your administrator has configured the application {appName} (\u0027{appId}\u0027) to block users unless they are specifically granted (\u0027assigned\u0027) access to the application.  The signed in user \u0027{user}\u0027 is blocked because they are not a direct member of a group with access, nor had access directly assigned by an administrator. Please contact your administrator to assign access to this application."
+                         },
+    "wait_minutes":  15,
+    "poll_seconds":  30
+}

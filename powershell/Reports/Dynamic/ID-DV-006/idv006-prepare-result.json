@@ -1,0 +1,12 @@
+﻿{
+    "scenario_id":  "ID-DV-006",
+    "status":  "DECOY_READY",
+    "tenant_id":  "a42bcf6e-a159-49f2-b6c8-8e856fce43e0",
+    "admin_account":  "habib@M365x07179530.onmicrosoft.com",
+    "decoy_user_principal_name":  "ztvp-idv006-decoy-20260601-151924-1dw8s@M365x07179530.onmicrosoft.com",
+    "decoy_temporary_password":  "ZTVP!b5fbfd90dd4846aA9",
+    "tenant_domain":  "M365x07179530.onmicrosoft.com",
+    "message":  "Decoy user created. Press \u0027Start evidence window\u0027 before performing the risky sign-in test, then sign in with this decoy.",
+    "state_path":  "C:\\Users\\Habib Torjmen\\Desktop\\Habib Enetcom\\PFE FIFI\\internship-progress-2026\\powershell\\Reports\\Dynamic\\ID-DV-006\\idv006-state.json",
+    "prepared_at":  "2026-06-01T15:19:27"
+}

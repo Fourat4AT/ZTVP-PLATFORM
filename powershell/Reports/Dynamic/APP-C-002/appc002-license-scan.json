@@ -1,0 +1,74 @@
+﻿[
+    {
+        "skuId":  "f30db892-07e9-47e9-837c-80727f46fd3d",
+        "skuPartNumber":  "FLOW_FREE",
+        "capabilityStatus":  "Enabled",
+        "enabled":  10000,
+        "consumed":  7,
+        "available":  9993,
+        "excluded":  true,
+        "score":  -100,
+        "exchangePlans":  [
+                              "EXCHANGE_S_FOUNDATION"
+                          ],
+        "selectedCandidate":  false
+    },
+    {
+        "skuId":  "a403ebcc-fae0-4ca2-8c8c-7a907fd6c235",
+        "skuPartNumber":  "POWER_BI_STANDARD",
+        "capabilityStatus":  "Enabled",
+        "enabled":  1000000,
+        "consumed":  2,
+        "available":  999998,
+        "excluded":  true,
+        "score":  -100,
+        "exchangePlans":  [
+                              "EXCHANGE_S_FOUNDATION"
+                          ],
+        "selectedCandidate":  false
+    },
+    {
+        "skuId":  "7e31c0d9-9551-471d-836f-32ee72be4a01",
+        "skuPartNumber":  "Microsoft_Teams_Enterprise_New",
+        "capabilityStatus":  "Enabled",
+        "enabled":  20,
+        "consumed":  7,
+        "available":  13,
+        "excluded":  false,
+        "score":  500,
+        "exchangePlans":  [
+                              "EXCHANGE_S_DESKLESS"
+                          ],
+        "selectedCandidate":  true
+    },
+    {
+        "skuId":  "ad7a56e0-6903-4d13-94f3-5ad491e78960",
+        "skuPartNumber":  "TVM_Premium_Add_on",
+        "capabilityStatus":  "Enabled",
+        "enabled":  1000000,
+        "consumed":  3,
+        "available":  999997,
+        "excluded":  false,
+        "score":  0,
+        "exchangePlans":  [
+
+                          ],
+        "selectedCandidate":  false
+    },
+    {
+        "skuId":  "18a4bd3f-0b5b-4887-b04f-61dd0ee15f5e",
+        "skuPartNumber":  "Microsoft_365_E5_(no_Teams)",
+        "capabilityStatus":  "Enabled",
+        "enabled":  20,
+        "consumed":  9,
+        "available":  11,
+        "excluded":  false,
+        "score":  800,
+        "exchangePlans":  [
+                              "EXCHANGE_ANALYTICS",
+                              "EXCHANGE_S_ENTERPRISE",
+                              "MIP_S_EXCHANGE"
+                          ],
+        "selectedCandidate":  true
+    }
+]

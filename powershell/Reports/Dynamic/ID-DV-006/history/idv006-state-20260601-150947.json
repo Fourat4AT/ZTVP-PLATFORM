@@ -1,0 +1,19 @@
+﻿{
+    "scenario_id":  "ID-DV-006",
+    "display_id":  "ID-DV-006",
+    "scenario_name":  "Sign-in Risk Conditional Access Validation",
+    "mode":  "Decoy sign-in risk + Conditional Access evidence active run",
+    "run_id":  "20260601-150947",
+    "prepared_at":  "2026-06-01T15:09:50",
+    "tenant_id":  "a42bcf6e-a159-49f2-b6c8-8e856fce43e0",
+    "admin_account":  "habib@M365x07179530.onmicrosoft.com",
+    "tenant_domain":  "M365x07179530.onmicrosoft.com",
+    "evidence_start_utc":  "2026-06-01T14:18:59Z",
+    "decoy_user":  {
+                       "id":  "89c93c19-24d3-4ec2-afa3-3fdac9a80d2c",
+                       "user_principal_name":  "ztvp-idv006-decoy-20260601-150947-kpkz0@M365x07179530.onmicrosoft.com",
+                       "display_name":  "ZTVP ID-DV-006 Sign-in Risk Decoy User",
+                       "temporary_password":  "ZTVP!bcf9bdded60443aA9",
+                       "created_by_ztvp":  true
+                   }
+}

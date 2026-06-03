@@ -61,6 +61,18 @@ except Exception:
     render_appdv007_runner = None
 
 
+try:
+    from dynamic_appdv001 import render_appdv001_runner
+except Exception:
+    render_appdv001_runner = None
+
+
+try:
+    from dynamic_idv006 import render_idv006_runner
+except Exception:
+    render_idv006_runner = None
+
+
 
 try:
     from dynamic_devdv001 import render_devdv001_runner
@@ -212,6 +224,34 @@ BUILTINS = {
         "evidence": "Connected account, tenant ID, app registration creation result, authorization error if blocked, cleanup result, JSON and HTML report.",
         "expected": "A normal non-admin user should not be able to create app registrations unless this is explicitly allowed by policy.",
     },
+    "APP-DV-001": {
+        "display_id": "APP-DV-001",
+        "scenario_id": "APP-DV-001",
+        "name": "Enterprise App Assignment Enforcement Probe",
+        "pillar": "Applications",
+        "scope": "Cloud",
+        "severity": "High",
+        "support": "SUPPORTED",
+        "goal": "Validate whether an unassigned user is actually denied access to an enterprise application that requires user assignment.",
+        "decoy": "Temporary standard decoy user and a controlled assignment-required enterprise application created by ZTVP. The decoy user is intentionally not assigned.",
+        "action": "Sign in as the decoy user to the controlled assignment-required enterprise app, then evaluate whether Entra blocks the unassigned user.",
+        "evidence": "Connected account, tenant ID, target app, sign-in result, assignment-required authorization block (AADSTS50105) if denied, cleanup result, JSON and HTML report.",
+        "expected": "An unassigned user should be denied access to an enterprise application that requires user assignment.",
+    },
+    "ID-DV-006": {
+        "display_id": "ID-DV-006",
+        "scenario_id": "ID-DV-006",
+        "name": "Sign-in Risk Conditional Access Validation",
+        "pillar": "Identity",
+        "scope": "Cloud",
+        "severity": "High",
+        "support": "SUPPORTED",
+        "goal": "Validate whether the tenant has an effective Conditional Access response (block or MFA/strong authentication) for risky sign-ins.",
+        "decoy": "Temporary standard decoy user created by ZTVP. The tester triggers risky sign-in behavior (TOR/VPN/unusual location and/or repeated wrong passwords) then signs in correctly.",
+        "action": "Start the evidence window, perform the risky sign-in test as the decoy, then poll Entra sign-in logs and Conditional Access policies for the enforcement result.",
+        "evidence": "Enabled sign-in risk Conditional Access policies, sign-in risk level/state, Conditional Access result, applied policies, JSON and HTML report.",
+        "expected": "A risky sign-in is blocked or challenged with MFA/strong authentication by an enabled Conditional Access policy.",
+    },
     "ID-C-001": {
         "display_id": "ID-DV-001",
         "scenario_id": "ID-C-001",
@@ -292,6 +332,8 @@ ALIASES = {
     "DEV-DV-002": "DEV-DV-002",
     "DEV-DV-001": "DEV-DV-001",
     "APP-DV-007": "APP-DV-007",
+    "APP-DV-001": "APP-DV-001",
+    "ID-DV-006": "ID-DV-006",
     "APP-DV-003": "APP-C-003",
     "APP-C-003": "APP-C-003",
     "APP-DV-004": "APP-DV-004",
@@ -396,6 +438,12 @@ def _builtin_key(scenario: dict) -> str | None:
 
     if "app registration" in name or "application registration" in name:
         return "APP-DV-007"
+
+    if ("enterprise app" in name or "enterprise application" in name) and "assignment" in name:
+        return "APP-DV-001"
+
+    if ("sign-in risk" in name or "signin risk" in name or "sign in risk" in name) and ("conditional access" in name or "risk" in name):
+        return "ID-DV-006"
 
     if "sensitive app access" in name or ("unmanaged" in name and "sensitive" in name):
         return "APP-DV-004"
@@ -522,6 +570,14 @@ def _is_appc003(scenario: dict) -> bool:
 
 def _is_appdv007(scenario: dict) -> bool:
     return _builtin_key(scenario) == "APP-DV-007"
+
+
+def _is_appdv001(scenario: dict) -> bool:
+    return _builtin_key(scenario) == "APP-DV-001"
+
+
+def _is_idv006(scenario: dict) -> bool:
+    return _builtin_key(scenario) == "ID-DV-006"
 
 
 def _is_appdv004(scenario: dict) -> bool:
@@ -1118,6 +1174,20 @@ def render_dynamic_validation_page(
                 st.error("APP-DV-007 runner could not be loaded. Check ui/dynamic_appdv007.py.")
             else:
                 render_appdv007_runner(project_root)
+
+
+        elif _is_appdv001(locals().get("open_scenario", locals().get("selected", {}))):
+            if render_appdv001_runner is None:
+                st.error("APP-DV-001 runner could not be loaded. Check ui/dynamic_appdv001.py.")
+            else:
+                render_appdv001_runner(project_root)
+
+
+        elif _is_idv006(locals().get("open_scenario", locals().get("selected", {}))):
+            if render_idv006_runner is None:
+                st.error("ID-DV-006 runner could not be loaded. Check ui/dynamic_idv006.py.")
+            else:
+                render_idv006_runner(project_root)
 
 
         elif _is_appdv004(locals().get("open_scenario", locals().get("selected", {}))):

@@ -1,0 +1,39 @@
+﻿{
+    "scenario_id":  "APP-C-002",
+    "display_id":  "APP-DV-002",
+    "scenario_name":  "Exchange External Mail Forwarding Exposure Validation",
+    "run_id":  "20260601-093929",
+    "prepared_at":  "2026-06-01T09:39:31",
+    "tenant_id":  "a42bcf6e-a159-49f2-b6c8-8e856fce43e0",
+    "connected_account":  "habib@M365x07179530.onmicrosoft.com",
+    "decoy_user":  {
+                       "id":  "90a6f6cd-0b6e-4717-8fcc-28789637a477",
+                       "user_principal_name":  "ztvp-appc002-forwarding-20260601-093929-4cotp@M365x07179530.onmicrosoft.com",
+                       "display_name":  "ZTVP APP-C-002 Exchange Forwarding Decoy Mailbox 20260601-093929",
+                       "usage_location":  "TN",
+                       "created_by_ztvp":  true,
+                       "password_stored_in_report":  false,
+                       "must_be_deleted_after_test":  true
+                   },
+    "assigned_license":  {
+                             "sku_id":  "18a4bd3f-0b5b-4887-b04f-61dd0ee15f5e",
+                             "sku_part_number":  "Microsoft_365_E5_(no_Teams)",
+                             "exchange_plan_names":  [
+                                                         "EXCHANGE_ANALYTICS",
+                                                         "EXCHANGE_S_ENTERPRISE",
+                                                         "MIP_S_EXCHANGE"
+                                                     ],
+                             "assigned_by_ztvp":  true,
+                             "must_be_removed_after_test":  true
+                         },
+    "forwarding_artifacts":  {
+                                 "mailbox_forwarding_configured":  false,
+                                 "inbox_rule_created":  false,
+                                 "inbox_rule_name":  null,
+                                 "external_target":  null
+                             },
+    "cleanup":  {
+                    "status":  "Pending",
+                    "action":  "Cleanup removes forwarding artifacts, license assignment, decoy user, and local state."
+                }
+}

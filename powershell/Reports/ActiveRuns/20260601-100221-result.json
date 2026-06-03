@@ -1,0 +1,199 @@
+﻿{
+    "scenario_id":  "APP-DV-001",
+    "display_id":  "APP-DV-001",
+    "scenario_name":  "Enterprise App Assignment Enforcement Probe",
+    "pillar":  "Applications",
+    "scope":  "Cloud",
+    "mode":  "Active run - Entra sign-in log evidence polling",
+    "run_id":  "20260601-100221",
+    "tenant_id":  "a42bcf6e-a159-49f2-b6c8-8e856fce43e0",
+    "tenant":  "a42bcf6e-a159-49f2-b6c8-8e856fce43e0",
+    "expected_decoy_user":  "ztvp-appdv001-decoy-20260601-100221-jx9kr@M365x07179530.onmicrosoft.com",
+    "connected_probe_account":  "ztvp-appdv001-decoy-20260601-100221-jx9kr@M365x07179530.onmicrosoft.com",
+    "target_app":  "ZTVP-APP-DV-001-AssignmentEnforcement-App-20260601-100221",
+    "started_utc":  "2026-06-01T10:30:19Z",
+    "completed_utc":  "2026-06-01T10:30:19Z",
+    "status":  "PASS_UNASSIGNED_USER_BLOCKED",
+    "risk":  "LOW",
+    "executive_summary":  "The unassigned decoy user was blocked from the assignment-required enterprise app (AADSTS50105).",
+    "final_claim":  "Enterprise app assignment enforcement works: an unassigned user is denied access to the controlled app.",
+    "evidence_quality":  "Strong - Entra sign-in log recorded an assignment-required block (error 50105).",
+    "control_tested":  "An enterprise application that requires user assignment must deny access to users who are not assigned.",
+    "test_method":  "The decoy user signs in to the controlled assignment-required app; ZTVP polls Entra sign-in logs for the authorization result (error code 50105 vs success).",
+    "warnings":  [
+                     "Too many retries performed. More than 3 retries encountered while sending the request."
+                 ],
+    "decoy_user":  {
+                       "id":  "de0be8e8-ef3e-4cde-8a9b-aaecca3c7d91",
+                       "user_principal_name":  "ztvp-appdv001-decoy-20260601-100221-jx9kr@M365x07179530.onmicrosoft.com",
+                       "display_name":  "ZTVP APP-DV-001 Enterprise App Assignment Decoy User",
+                       "assigned_to_app":  false,
+                       "password_stored_in_report":  false,
+                       "created_by_ztvp":  true
+                   },
+    "assignment_enforcement_evidence":  {
+                                            "evidence_source":  "Microsoft Entra sign-in logs (auditLogs/signIns)",
+                                            "actual_sign_in_attempt_performed":  true,
+                                            "target_app_id":  "ed0ab3dc-045a-4b0f-b560-b619da3d2fbe",
+                                            "target_app_display_name":  "ZTVP-APP-DV-001-AssignmentEnforcement-App-20260601-100221",
+                                            "app_role_assignment_required":  true,
+                                            "decoy_user_assigned":  false,
+                                            "sign_in_time":  "06/01/2026 09:51:46",
+                                            "sign_in_error_code":  50105,
+                                            "sign_in_failure_reason":  "Your administrator has configured the application {appName} (\u0027{appId}\u0027) to block users unless they are specifically granted (\u0027assigned\u0027) access to the application.  The signed in user \u0027{user}\u0027 is blocked because they are not a direct member of a group with access, nor had access directly assigned by an administrator. Please contact your administrator to assign access to this application.",
+                                            "resource_signed_into":  "Microsoft Graph",
+                                            "conditional_access_status":  "success",
+                                            "access_granted":  false,
+                                            "assignment_required_blocked":  true
+                                        },
+    "sign_in_log_evidence":  {
+                                 "evidence_source":  "Microsoft Entra sign-in logs (auditLogs/signIns)",
+                                 "signin_found":  true,
+                                 "selected_event":  {
+                                                        "id":  "7ab04902-25c4-47f1-9ee7-0afdb9130f00",
+                                                        "createdDateTime":  "06/01/2026 09:51:46",
+                                                        "userPrincipalName":  "ztvp-appdv001-decoy-20260601-100221-jx9kr@m365x07179530.onmicrosoft.com",
+                                                        "appDisplayName":  "ZTVP-APP-DV-001-AssignmentEnforcement-App-20260601-100221",
+                                                        "resourceDisplayName":  "Microsoft Graph",
+                                                        "conditionalAccessStatus":  "success",
+                                                        "errorCode":  50105,
+                                                        "failureReason":  "Your administrator has configured the application {appName} (\u0027{appId}\u0027) to block users unless they are specifically granted (\u0027assigned\u0027) access to the application.  The signed in user \u0027{user}\u0027 is blocked because they are not a direct member of a group with access, nor had access directly assigned by an administrator. Please contact your administrator to assign access to this application.",
+                                                        "clientAppUsed":  "Mobile Apps and Desktop clients",
+                                                        "ipAddress":  "197.244.197.149"
+                                                    },
+                                 "sign_in_error_code":  50105,
+                                 "all_events":  [
+                                                    {
+                                                        "id":  "7ab04902-25c4-47f1-9ee7-0afdb9130f00",
+                                                        "createdDateTime":  "06/01/2026 09:51:46",
+                                                        "userPrincipalName":  "ztvp-appdv001-decoy-20260601-100221-jx9kr@m365x07179530.onmicrosoft.com",
+                                                        "appDisplayName":  "ZTVP-APP-DV-001-AssignmentEnforcement-App-20260601-100221",
+                                                        "resourceDisplayName":  "Microsoft Graph",
+                                                        "conditionalAccessStatus":  "success",
+                                                        "errorCode":  50105,
+                                                        "failureReason":  "Your administrator has configured the application {appName} (\u0027{appId}\u0027) to block users unless they are specifically granted (\u0027assigned\u0027) access to the application.  The signed in user \u0027{user}\u0027 is blocked because they are not a direct member of a group with access, nor had access directly assigned by an administrator. Please contact your administrator to assign access to this application.",
+                                                        "clientAppUsed":  "Mobile Apps and Desktop clients",
+                                                        "ipAddress":  "197.244.197.149"
+                                                    },
+                                                    {
+                                                        "id":  "a12fa32d-5e4c-4ef8-97b7-58456a321800",
+                                                        "createdDateTime":  "06/01/2026 09:51:12",
+                                                        "userPrincipalName":  "ztvp-appdv001-decoy-20260601-100221-jx9kr@m365x07179530.onmicrosoft.com",
+                                                        "appDisplayName":  "ZTVP-APP-DV-001-AssignmentEnforcement-App-20260601-100221",
+                                                        "resourceDisplayName":  "Microsoft Graph",
+                                                        "conditionalAccessStatus":  "success",
+                                                        "errorCode":  50105,
+                                                        "failureReason":  "Your administrator has configured the application {appName} (\u0027{appId}\u0027) to block users unless they are specifically granted (\u0027assigned\u0027) access to the application.  The signed in user \u0027{user}\u0027 is blocked because they are not a direct member of a group with access, nor had access directly assigned by an administrator. Please contact your administrator to assign access to this application.",
+                                                        "clientAppUsed":  "Mobile Apps and Desktop clients",
+                                                        "ipAddress":  "197.244.197.149"
+                                                    },
+                                                    {
+                                                        "id":  "620f2583-6d0d-4f77-8053-110f047e1400",
+                                                        "createdDateTime":  "06/01/2026 09:44:59",
+                                                        "userPrincipalName":  "ztvp-appdv001-decoy-20260601-100221-jx9kr@m365x07179530.onmicrosoft.com",
+                                                        "appDisplayName":  "ZTVP-APP-DV-001-AssignmentEnforcement-App-20260601-100221",
+                                                        "resourceDisplayName":  "Microsoft Graph",
+                                                        "conditionalAccessStatus":  "failure",
+                                                        "errorCode":  500121,
+                                                        "failureReason":  "Authentication failed during strong authentication request.",
+                                                        "clientAppUsed":  "Mobile Apps and Desktop clients",
+                                                        "ipAddress":  "197.244.197.149"
+                                                    },
+                                                    {
+                                                        "id":  "3e199d47-c819-49c1-9a2e-269d4c6b1e00",
+                                                        "createdDateTime":  "06/01/2026 09:40:22",
+                                                        "userPrincipalName":  "ztvp-appdv001-decoy-20260601-100221-jx9kr@m365x07179530.onmicrosoft.com",
+                                                        "appDisplayName":  "ZTVP-APP-DV-001-AssignmentEnforcement-App-20260601-100221",
+                                                        "resourceDisplayName":  "Microsoft Graph",
+                                                        "conditionalAccessStatus":  "failure",
+                                                        "errorCode":  50074,
+                                                        "failureReason":  "Strong Authentication is required.",
+                                                        "clientAppUsed":  "Mobile Apps and Desktop clients",
+                                                        "ipAddress":  "197.244.197.149"
+                                                    },
+                                                    {
+                                                        "id":  "4028c6e5-55b8-46d5-8e14-a0ccc42b1a00",
+                                                        "createdDateTime":  "06/01/2026 09:34:45",
+                                                        "userPrincipalName":  "ztvp-appdv001-decoy-20260601-100221-jx9kr@m365x07179530.onmicrosoft.com",
+                                                        "appDisplayName":  "ZTVP-APP-DV-001-AssignmentEnforcement-App-20260601-100221",
+                                                        "resourceDisplayName":  "Microsoft Graph",
+                                                        "conditionalAccessStatus":  "failure",
+                                                        "errorCode":  50074,
+                                                        "failureReason":  "Strong Authentication is required.",
+                                                        "clientAppUsed":  "Mobile Apps and Desktop clients",
+                                                        "ipAddress":  "197.244.197.149"
+                                                    },
+                                                    {
+                                                        "id":  "908319d5-9c45-47fb-997a-b3484f421600",
+                                                        "createdDateTime":  "06/01/2026 09:31:20",
+                                                        "userPrincipalName":  "ztvp-appdv001-decoy-20260601-100221-jx9kr@m365x07179530.onmicrosoft.com",
+                                                        "appDisplayName":  "ZTVP-APP-DV-001-AssignmentEnforcement-App-20260601-100221",
+                                                        "resourceDisplayName":  "ZTVP-APP-DV-001-AssignmentEnforcement-App-20260601-100221",
+                                                        "conditionalAccessStatus":  "failure",
+                                                        "errorCode":  50076,
+                                                        "failureReason":  "Due to a configuration change made by your administrator, or because you moved to a new location, you must use multi-factor authentication to access \u0027{resource}\u0027.",
+                                                        "clientAppUsed":  "Browser",
+                                                        "ipAddress":  "197.244.197.149"
+                                                    },
+                                                    {
+                                                        "id":  "bb9f7f76-1f3f-4c73-9689-4e9355762700",
+                                                        "createdDateTime":  "06/01/2026 09:13:04",
+                                                        "userPrincipalName":  "ztvp-appdv001-decoy-20260601-100221-jx9kr@m365x07179530.onmicrosoft.com",
+                                                        "appDisplayName":  "ZTVP-APP-DV-001-AssignmentEnforcement-App-20260601-100221",
+                                                        "resourceDisplayName":  "Microsoft Graph",
+                                                        "conditionalAccessStatus":  "failure",
+                                                        "errorCode":  50076,
+                                                        "failureReason":  "Due to a configuration change made by your administrator, or because you moved to a new location, you must use multi-factor authentication to access \u0027{resource}\u0027.",
+                                                        "clientAppUsed":  "Browser",
+                                                        "ipAddress":  "197.244.197.149"
+                                                    },
+                                                    {
+                                                        "id":  "1b72f362-5531-4fe2-a666-4e0350c02400",
+                                                        "createdDateTime":  "06/01/2026 09:06:32",
+                                                        "userPrincipalName":  "ztvp-appdv001-decoy-20260601-100221-jx9kr@m365x07179530.onmicrosoft.com",
+                                                        "appDisplayName":  "ZTVP-APP-DV-001-AssignmentEnforcement-App-20260601-100221",
+                                                        "resourceDisplayName":  "Microsoft Graph",
+                                                        "conditionalAccessStatus":  "success",
+                                                        "errorCode":  50105,
+                                                        "failureReason":  "Your administrator has configured the application {appName} (\u0027{appId}\u0027) to block users unless they are specifically granted (\u0027assigned\u0027) access to the application.  The signed in user \u0027{user}\u0027 is blocked because they are not a direct member of a group with access, nor had access directly assigned by an administrator. Please contact your administrator to assign access to this application.",
+                                                        "clientAppUsed":  "Mobile Apps and Desktop clients",
+                                                        "ipAddress":  "197.244.197.149"
+                                                    }
+                                                ],
+                                 "event_count":  8,
+                                 "api_errors":  [
+                                                    "Too many retries performed. More than 3 retries encountered while sending the request."
+                                                ]
+                             },
+    "cleanup":  {
+                    "app_cleanup_required":  true,
+                    "decoy_user_cleanup_required":  true,
+                    "state_file_active":  true,
+                    "cleanup_required":  true,
+                    "cleanup_completed":  false
+                },
+    "metrics":  {
+                    "probe_used_decoy_user":  true,
+                    "actual_sign_in_attempt_performed":  true,
+                    "sign_in_error_code":  50105,
+                    "access_granted":  false,
+                    "assignment_required_blocked":  true,
+                    "app_role_assignment_required":  true,
+                    "tenant_evidence_found":  true,
+                    "poll_attempts":  2,
+                    "max_poll_attempts":  30,
+                    "polling_stopped_early":  true
+                },
+    "recommendations":  [
+                            "Require user assignment on sensitive enterprise applications (appRoleAssignmentRequired).",
+                            "Grant access only through controlled groups or approved app role assignments.",
+                            "Review existing enterprise apps that do not require assignment.",
+                            "Monitor Entra sign-in logs for unassigned access attempts (error code 50105).",
+                            "Run cleanup to delete the APP-DV-001 decoy user and controlled app."
+                        ],
+    "limitations":  [
+                        "This validation requires one controlled decoy sign-in to the controlled app.",
+                        "If MFA (Security Defaults / Conditional Access) is enforced, the decoy must complete MFA before Entra reaches the assignment decision.",
+                        "The controlled enterprise app and decoy user are temporary and must be cleaned up."
+                    ]
+}

@@ -134,6 +134,10 @@ def _what_was_tested(report: dict[str, Any]) -> str:
         return "ZTVP used a safe EICAR test pattern to verify Defender detection and tenant-side evidence."
     if sid == "APP-DV-007" or "app registration" in name:
         return "ZTVP used a normal decoy user to attempt app registration creation through Microsoft Graph."
+    if sid == "APP-DV-001" or ("enterprise app" in name and "assignment" in name):
+        return "ZTVP created a controlled assignment-required enterprise app and a standard decoy user, then attempted a real decoy sign-in to verify whether the unassigned user is denied access."
+    if sid == "ID-DV-006" or ("sign-in risk" in name or "signin risk" in name):
+        return "ZTVP created a standard decoy user; the tester triggered risky sign-in behaviour (TOR/VPN/unusual location and/or repeated wrong passwords) then signed in correctly. ZTVP polled Entra sign-in logs for the risk classification and checked Conditional Access policies that target sign-in risk."
     if device_kind == "hybrid_tamper":
         return "ZTVP attempted controlled Defender preference changes on a test endpoint, then checked local evidence and Defender XDR tenant telemetry."
     if sid == "DEV-DV-001":
@@ -705,6 +709,13 @@ def _recommendations(report: dict[str, Any], verdict: str) -> list[str]:
             "Review Entra user settings for app registration creation.",
             "Allow app creation only for approved developer groups.",
             "Monitor Entra audit logs for application creation.",
+        ]
+    if sid == "APP-DV-001" or ("enterprise app" in name and "assignment" in name):
+        return [
+            "Require user assignment on sensitive enterprise applications (appRoleAssignmentRequired).",
+            "Grant access only through controlled groups or approved app role assignments.",
+            "Review existing enterprise apps that do not require assignment.",
+            "Monitor Entra sign-in logs for unassigned access attempts (error code 50105).",
         ]
     if sid == "APP-DV-004" or "unmanaged device" in name:
         if sid == "DEV-DV-001":
@@ -1378,6 +1389,87 @@ def write_standard_html_report(report: dict[str, Any], html_path: Path, stdout: 
         ]
         target_html = "".join(f"<tr><th>{_safe(k)}</th><td>{_safe(v)}</td></tr>" for k, v in target_rows)
         controlled_target_section = f"<h2>Controlled SharePoint Target</h2><table><tbody>{target_html}</tbody></table>"
+    appdv001_signin_section = ""
+    if str(report.get("display_id") or report.get("scenario_id") or "").upper() == "APP-DV-001":
+        sie = report.get("sign_in_log_evidence") or {}
+        events = sie.get("all_events") or []
+        if events:
+            event_rows_html = "".join(
+                "<tr>"
+                f"<td>{_safe(ev.get('createdDateTime'))}</td>"
+                f"<td>{_safe(ev.get('errorCode'))}</td>"
+                f"<td>{_safe(ev.get('failureReason'))}</td>"
+                f"<td>{_safe(ev.get('resourceDisplayName'))}</td>"
+                f"<td>{_safe(ev.get('conditionalAccessStatus'))}</td>"
+                f"<td>{_safe(ev.get('clientAppUsed'))}</td>"
+                "</tr>"
+                for ev in events
+                if isinstance(ev, dict)
+            )
+            appdv001_signin_section = (
+                "<h2>Justifying Entra Sign-in Records</h2>"
+                "<p>Raw sign-in events for the unassigned decoy against the controlled enterprise app. "
+                "Error code <strong>50105</strong> = blocked by assignment requirement (PASS); <strong>0</strong> = success (FAIL).</p>"
+                "<table><thead><tr><th>Time (UTC)</th><th>Error code</th><th>Failure reason</th><th>Resource</th><th>CA status</th><th>Client app</th></tr></thead>"
+                f"<tbody>{event_rows_html}</tbody></table>"
+            )
+        else:
+            appdv001_signin_section = (
+                "<h2>Justifying Entra Sign-in Records</h2>"
+                "<p>No decoy sign-in records have appeared in the Entra sign-in logs yet for the controlled app.</p>"
+            )
+    idv006_section = ""
+    if str(report.get("display_id") or report.get("scenario_id") or "").upper() == "ID-DV-006":
+        sre = report.get("sign_in_risk_evidence") or {}
+        events = sre.get("all_events") or []
+        if events:
+            ev_rows = "".join(
+                "<tr>"
+                f"<td>{_safe(ev.get('createdDateTime'))}</td>"
+                f"<td>{_safe(ev.get('errorCode'))}</td>"
+                f"<td>{_safe(ev.get('riskLevelDuringSignIn'))}</td>"
+                f"<td>{_safe(ev.get('riskState'))}</td>"
+                f"<td>{_safe(ev.get('riskDetail'))}</td>"
+                f"<td>{_safe(ev.get('conditionalAccessStatus'))}</td>"
+                f"<td>{_safe(ev.get('ca_action'))}</td>"
+                f"<td>{_safe(ev.get('ipAddress'))} {_safe(ev.get('location'))}</td>"
+                "</tr>"
+                for ev in events
+                if isinstance(ev, dict)
+            )
+            signin_table = (
+                "<table><thead><tr><th>Time (UTC)</th><th>Error</th><th>Risk (sign-in)</th><th>Risk state</th>"
+                "<th>Risk detail</th><th>CA status</th><th>CA action</th><th>IP / location</th></tr></thead>"
+                f"<tbody>{ev_rows}</tbody></table>"
+            )
+        else:
+            signin_table = "<p>No matching decoy sign-in records were found in the Entra sign-in logs.</p>"
+
+        policies = report.get("conditional_access_policy_evidence") or []
+        if policies:
+            pol_rows = "".join(
+                "<tr>"
+                f"<td>{_safe(p.get('policy_name'))}</td>"
+                f"<td>{_safe(p.get('state'))}</td>"
+                f"<td>{_safe(', '.join(p.get('sign_in_risk_levels', []) or []))}</td>"
+                f"<td>{_safe(', '.join(p.get('grant_controls', []) or []))}</td>"
+                f"<td>{_safe(p.get('authentication_strength') or '')}</td>"
+                "</tr>"
+                for p in policies
+                if isinstance(p, dict)
+            )
+            policy_table = (
+                "<table><thead><tr><th>Policy</th><th>State</th><th>Sign-in risk levels</th>"
+                "<th>Grant controls</th><th>Auth strength</th></tr></thead>"
+                f"<tbody>{pol_rows}</tbody></table>"
+            )
+        else:
+            policy_table = "<p>No Conditional Access policies targeting sign-in risk were found.</p>"
+
+        idv006_section = (
+            "<h2>Tenant Sign-in Risk Evidence</h2>" + signin_table +
+            "<h2>Conditional Access Policy Evidence</h2>" + policy_table
+        )
     rec_html = "".join(f"<li>{_safe(item)}</li>" for item in _recommendations(report, verdict))
     evidence_html = "".join(
         f"<tr><td>{_safe(row['source'])}</td><td>{_safe(row['found'])}</td><td>{_safe(row['object'])}</td><td>{_safe(row['timestamp'])}</td><td>{_safe(row['notes'])}</td></tr>"
@@ -1462,6 +1554,8 @@ pre {{ background:#101827; color:#e5edf7; padding:14px; border-radius:8px; overf
   {effective_policy_section}
   {idc005_policy_section}
   {polling_section}
+  {appdv001_signin_section}
+  {idv006_section}
   <h2>Why This Verdict Was Selected</h2><p>{_safe(_verdict_reason(verdict, report))}</p>
   <h2>Remediation / Recommendation</h2><ul>{rec_html}</ul>
   <h2>Evidence Summary</h2>
